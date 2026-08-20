@@ -54,12 +54,23 @@ import time
 import urllib.request
 import urllib.error
 from collections import defaultdict
+from datetime import datetime
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 DEFAULT_STATE_FILE = "state/last_fill.json"
 DEFAULT_LOOKBACK_MINUTES = 15
+
+# Fuso orario in cui mostrare l'intestazione di aggiornamento. Se il
+# database IANA non e' disponibile sul runner, si ricade su UTC senza far
+# fallire lo script (vedi format_update_header).
+DISPLAY_TIMEZONE = "Europe/Paris"
+
+ITALIAN_MONTHS = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+]
 
 # Nomi di "type" candidati per recuperare lo stato dei TWAP (size totale,
 # eseguito, durata). Non c'e' modo di verificare con certezza quale sia
@@ -314,6 +325,22 @@ def format_twap_recap_message(twap_id, prog: dict, current_mid: float | None, ta
     return "\n".join(lines)
 
 
+def format_update_header(now_ms: int) -> str:
+    """Intestazione mandata una sola volta all'inizio di ogni giro in cui
+    c'e' almeno un messaggio da inviare, per separare visivamente un
+    controllo dall'altro. Mostrata nel fuso orario DISPLAY_TIMEZONE quando
+    disponibile, altrimenti in UTC (mai un crash per questo)."""
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
+        tz_label = ""
+    except Exception:
+        dt = datetime.utcfromtimestamp(now_ms / 1000)
+        tz_label = " UTC"
+    mese = ITALIAN_MONTHS[dt.month - 1]
+    return f"🕐 Nuovo aggiornamento — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}"
+
+
 def format_new_twap_message(record: dict) -> str:
     """Messaggio inviato non appena un nuovo TWAP viene rilevato (avviato),
     prima ancora che scatti la sua prima slice."""
@@ -392,6 +419,21 @@ def main() -> int:
         twap_records = []
     twap_records_by_id = {str(r["twap_id"]): r for r in twap_records}
 
+    # Coda di tutti i messaggi da mandare in questo giro: si costruisce
+    # prima di inviare qualunque cosa, cosi' possiamo far precedere tutto da
+    # un'unica intestazione "nuovo aggiornamento" e mandare i messaggi in
+    # ordine, invece di intestazioni ripetute sparse nel codice. Ogni
+    # elemento ha "text" e "on_success" (eseguito solo se l'invio va a buon
+    # fine, per mantenere la stessa logica di retry-al-prossimo-giro di
+    # prima in caso di errore Telegram).
+    outgoing = []
+
+    def make_new_twap_cb(tid_str):
+        def cb():
+            known_twap_ids.add(tid_str)
+            known_twap_ids_list.append(tid_str)
+        return cb
+
     if is_very_first_run:
         # Primissimo run in assoluto per questa funzionalita': non
         # notificare come "nuovi" i TWAP gia' esistenti/passati, altrimenti
@@ -408,14 +450,7 @@ def main() -> int:
         for tid_str, record in twap_records_by_id.items():
             if tid_str in known_twap_ids:
                 continue
-            text = format_new_twap_message(record)
-            try:
-                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
-            except Exception as e:
-                print(f"ERRORE invio Telegram (nuovo TWAP {tid_str}): {e}", file=sys.stderr)
-                continue  # riprova al prossimo giro
-            known_twap_ids.add(tid_str)
-            known_twap_ids_list.append(tid_str)
+            outgoing.append({"text": format_new_twap_message(record), "on_success": make_new_twap_cb(tid_str)})
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -439,23 +474,23 @@ def main() -> int:
     regular_new = [f for f in new_fills if not f.get("twapId")]
     twap_new = [f for f in new_fills if f.get("twapId")]
 
-    # --- Ordini normali: notifica immediata ad ogni controllo, come prima ---
-    if regular_new:
-        by_oid = defaultdict(list)
-        for f in regular_new:
-            by_oid[f.get("oid")].append(f)
-        for oid, group in by_oid.items():
-            text = format_order_message(group)
-            try:
-                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
-            except Exception as e:
-                print(f"ERRORE invio Telegram (ordine oid={oid}): {e}", file=sys.stderr)
-                continue
+    def make_regular_cb(group):
+        def cb():
+            nonlocal max_time_seen
             for f in group:
                 tid = f.get("tid")
                 if tid is not None:
                     latest_tids.append(tid)
                 max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
+        return cb
+
+    # --- Ordini normali: notifica ad ogni controllo se c'e' qualcosa di nuovo ---
+    if regular_new:
+        by_oid = defaultdict(list)
+        for f in regular_new:
+            by_oid[f.get("oid")].append(f)
+        for oid, group in by_oid.items():
+            outgoing.append({"text": format_order_message(group), "on_success": make_regular_cb(group)})
 
     # --- Slice TWAP: accumulo silenzioso ad ogni controllo (nessun invio) ---
     if twap_new:
@@ -500,17 +535,34 @@ def main() -> int:
                     latest_tids.append(tid)
                 max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
 
-    # --- Recap TWAP: solo quelli il cui periodo di accumulo ha superato
-    # TWAP_RECAP_MINUTES, indipendentemente dal fatto che questo giro abbia
-    # trovato nuove slice o meno (un TWAP puo' aver accumulato slice in giri
-    # precedenti e diventare "scaduto" anche in un giro senza fill nuovi). ---
-    due_recaps = [
-        (key, prog)
-        for key, prog in twap_progress.items()
-        if prog.get("pending_count", 0) > 0
-        and prog.get("period_start_ms") is not None
-        and (now_ms - prog["period_start_ms"]) >= recap_interval_ms
-    ]
+    # --- Recap TWAP: un unico orario "prossimo recap" condiviso da TUTTI i
+    # TWAP, cosi' arrivano tutti insieme nello stesso batch invece che ognuno
+    # secondo il proprio orologio individuale (che partirebbe in momenti
+    # diversi a seconda di quando si e' vista la prima slice di ciascuno). ---
+    next_recap_due_ms = state.get("next_recap_due_ms")
+    if next_recap_due_ms is None:
+        next_recap_due_ms = now_ms + recap_interval_ms
+
+    recap_due_now = now_ms >= next_recap_due_ms
+    while now_ms >= next_recap_due_ms:
+        next_recap_due_ms += recap_interval_ms  # riallinea senza "andare alla deriva" anche se un giro salta
+
+    due_recaps = (
+        [(key, prog) for key, prog in twap_progress.items() if prog.get("pending_count", 0) > 0]
+        if recap_due_now
+        else []
+    )
+
+    def make_recap_cb(key, prog):
+        def cb():
+            # Azzera l'accumulo del periodo solo se l'invio e' andato a
+            # buon fine, altrimenti si riprova al giro successivo.
+            prog["pending_sz"] = 0.0
+            prog["pending_notional"] = 0.0
+            prog["pending_count"] = 0
+            prog["period_start_ms"] = None
+            twap_progress[key] = prog
+        return cb
 
     if due_recaps:
         mids = fetch_all_mids()
@@ -528,19 +580,26 @@ def main() -> int:
             target = {"total_sz": record["total_sz"]} if record and record.get("total_sz") is not None else None
 
             text = format_twap_recap_message(key, prog, current_mid, target)
-            try:
-                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
-            except Exception as e:
-                print(f"ERRORE invio Telegram (recap TWAP {key}): {e}", file=sys.stderr)
-                continue  # riprova al prossimo giro, l'accumulo resta intatto
+            outgoing.append({"text": text, "on_success": make_recap_cb(key, prog)})
 
-            # Azzera l'accumulo del periodo solo se l'invio e' andato a
-            # buon fine, altrimenti si riprova al giro successivo.
-            prog["pending_sz"] = 0.0
-            prog["pending_notional"] = 0.0
-            prog["pending_count"] = 0
-            prog["period_start_ms"] = None
-            twap_progress[key] = prog
+    # --- Invio effettivo: intestazione di aggiornamento (solo se c'e'
+    # davvero qualcosa da mandare in questo giro) seguita da tutti i
+    # messaggi accodati, in ordine. ---
+    if outgoing:
+        try:
+            send_telegram_message(bot_token, chat_id, format_update_header(now_ms), dry_run=dry_run)
+        except Exception as e:
+            # L'intestazione e' solo cosmetica: un suo eventuale fallimento
+            # non deve bloccare l'invio delle notifiche vere e proprie.
+            print(f"AVVISO: impossibile inviare l'intestazione di aggiornamento: {e}", file=sys.stderr)
+
+        for item in outgoing:
+            try:
+                send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run)
+            except Exception as e:
+                print(f"ERRORE invio Telegram: {e}", file=sys.stderr)
+                continue
+            item["on_success"]()
 
     # Tieni solo i piu' recenti per non far crescere il file all'infinito.
     latest_tids = latest_tids[-500:]
@@ -553,6 +612,7 @@ def main() -> int:
             "seen_tids": latest_tids,
             "twap_progress": twap_progress,
             "known_twap_ids": known_twap_ids_list,
+            "next_recap_due_ms": next_recap_due_ms,
         },
     )
     return 0
