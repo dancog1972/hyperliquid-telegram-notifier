@@ -75,6 +75,27 @@ def fetch_fills(wallet: str, start_time_ms: int, end_time_ms: int) -> list:
     return result
 
 
+def fetch_twap_slice_fills(wallet: str, start_time_ms: int) -> list:
+    """Le esecuzioni di ordini TWAP NON compaiono in userFills/userFillsByTime:
+    Hyperliquid le espone solo tramite questo endpoint separato, con uno
+    schema annidato ({"fill": {...}, "twapId": N}) e senza filtro temporale
+    lato server. Filtriamo qui in locale usando start_time_ms."""
+    payload = {"type": "userTwapSliceFills", "user": wallet}
+    result = http_post_json(HL_INFO_URL, payload)
+    if not isinstance(result, list):
+        raise RuntimeError(f"Risposta inattesa da Hyperliquid (TWAP): {result!r}")
+
+    fills = []
+    for item in result:
+        fill = dict(item.get("fill") or {})
+        if not fill:
+            continue
+        fill["twapId"] = item.get("twapId")
+        if fill.get("time", 0) >= start_time_ms:
+            fills.append(fill)
+    return fills
+
+
 def load_state(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -165,6 +186,8 @@ def main() -> int:
         start_time_ms = last_time_ms - 1000
 
     fills = fetch_fills(wallet, start_time_ms, now_ms)
+    twap_fills = fetch_twap_slice_fills(wallet, start_time_ms)
+    fills = fills + twap_fills
     fills.sort(key=lambda f: (f.get("time", 0), f.get("tid", 0)))
 
     new_fills = [f for f in fills if f.get("tid") not in seen_tids]
