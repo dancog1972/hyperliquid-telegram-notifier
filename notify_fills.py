@@ -7,19 +7,22 @@ userTwapSliceFills) per un wallet, confronta i fill ricevuti con l'ultimo
 stato salvato su disco e manda un messaggio Telegram per le nuove
 esecuzioni trovate:
 
-- Ordini normali (limite, stop, mercato): un messaggio con l'eseguito
-  TOTALE dell'ordine (media prezzo, size totale), con il dettaglio delle
-  singole esecuzioni sotto se sono state più di una nello stesso giro di
-  controllo.
-- Slice di ordini TWAP: un messaggio per ogni nuovo gruppo di slice
-  eseguite, con progresso cumulato del TWAP (quanto eseguito finora,
-  prezzo medio) e differenza rispetto al prezzo di mercato attuale. La
-  percentuale di completamento rispetto alla size totale del TWAP viene
-  mostrata solo se Hyperliquid espone quel dato in modo verificabile;
-  altrimenti quella riga viene omessa (mai mostrato un numero indovinato).
+- Ordini normali (limite, stop, mercato): notifica IMMEDIATA (🚨) ad ogni
+  controllo se c'e' qualcosa di nuovo, con l'eseguito TOTALE dell'ordine
+  (media prezzo, size totale) e il dettaglio delle singole esecuzioni sotto
+  se sono state piu' di una nello stesso giro di controllo.
+- Slice di ordini TWAP: NESSuna notifica ad ogni slice (sarebbero troppe).
+  Le slice vengono accumulate silenziosamente, e una volta ogni
+  TWAP_RECAP_MINUTES (default 60) viene mandato un unico messaggio di
+  recap per ciascun TWAP attivo con esecuzioni in quel periodo: quante
+  slice, size totale ed eseguito cumulato del TWAP, differenza rispetto al
+  prezzo di mercato attuale. La percentuale di completamento rispetto alla
+  size totale del TWAP viene mostrata solo se Hyperliquid espone quel dato
+  in modo verificabile; altrimenti quella riga viene omessa (mai mostrato
+  un numero indovinato).
 
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
-schedulato), non come processo always-on.
+schedulato / trigger esterno), non come processo always-on.
 
 Variabili d'ambiente richieste:
   HL_WALLET_ADDRESS     Indirizzo pubblico del wallet Hyperliquid (0x...)
@@ -32,6 +35,8 @@ Variabili opzionali:
                          quanti minuti indietro guardare (default: 15).
                          Evita di notificare tutta la storia del wallet al
                          primo run.
+  TWAP_RECAP_MINUTES     Ogni quanti minuti mandare il recap accumulato
+                         delle slice TWAP (default: 60).
 """
 
 import json
@@ -54,6 +59,12 @@ DEFAULT_LOOKBACK_MINUTES = 15
 # usiamo il primo che risponde con dati sensati. Se nessuno funziona, la
 # percentuale di completamento viene semplicemente omessa dai messaggi.
 TWAP_STATE_TYPE_CANDIDATES = ["userTwapHistory", "twapHistory"]
+
+DEFAULT_TWAP_RECAP_MINUTES = 60
+
+# Riga divisoria messa in cima ad ogni messaggio Telegram, cosi' notifiche
+# ravvicinate restano visivamente distinte invece di confondersi.
+MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖"
 
 
 def env_or_die(name: str) -> str:
@@ -207,7 +218,7 @@ def format_order_message(fills: list) -> str:
     total_closed_pnl = sum(float(f.get("closedPnl", 0) or 0) for f in fills)
     last_ts = max(f.get("time", 0) for f in fills)
 
-    lines = [f"✅ Eseguito totale: {side} {total_sz:g} {coin} @ {avg_px:g} (media)"]
+    lines = [f"🚨 Eseguito totale: {side} {total_sz:g} {coin} @ {avg_px:g} (media)"]
     if direction:
         lines.append(f"Tipo: {direction}")
     if total_closed_pnl != 0:
@@ -226,27 +237,29 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_twap_message(
-    twap_id, batch_fills: list, cumulative: dict, current_mid: float | None, target: dict | None
-) -> str:
-    first = batch_fills[0]
-    coin = first.get("coin", "?")
-    side = side_label(first.get("side", ""))
-    last_ts = max(f.get("time", 0) for f in batch_fills)
+def format_twap_recap_message(twap_id, prog: dict, current_mid: float | None, target: dict | None) -> str:
+    """Recap periodico (non per-slice) di un TWAP: quanto eseguito nel
+    periodo appena chiuso, quanto eseguito in totale sul TWAP, differenza
+    col prezzo di mercato attuale ed eventuale % di completamento."""
+    coin = prog.get("coin", "?")
+    side = side_label(prog.get("side", ""))
 
-    cum_executed_sz = cumulative["executed_sz"]
-    cum_avg_px = cumulative["notional"] / cum_executed_sz if cum_executed_sz else 0.0
+    pending_sz = prog.get("pending_sz", 0.0)
+    pending_count = prog.get("pending_count", 0)
+    pending_avg = (prog.get("pending_notional", 0.0) / pending_sz) if pending_sz else 0.0
 
-    lines = [f"⏱️ TWAP {coin} (id {twap_id}) — nuova slice eseguita: {side} {sum(float(f.get('sz', 0)) for f in batch_fills):g} @ {weighted_avg_price(batch_fills):g}"]
-    if len(batch_fills) > 1:
-        lines.append(f"↳ {len(batch_fills)} esecuzioni in questo controllo:")
-        for f in sorted(batch_fills, key=lambda x: x.get("time", 0)):
-            lines.append(
-                f"   - {float(f.get('sz', 0)):g} @ {float(f.get('px', 0)):g} "
-                f"({fmt_ts(f.get('time', 0))})"
-            )
+    cum_executed_sz = prog.get("executed_sz", 0.0)
+    cum_avg_px = (prog.get("notional", 0.0) / cum_executed_sz) if cum_executed_sz else 0.0
 
-    lines.append(f"Eseguito finora sul TWAP: {cum_executed_sz:g} {coin} @ media {cum_avg_px:g}")
+    period_start = prog.get("period_start_ms")
+    period_end = prog.get("last_ms")
+
+    plurale = "e" if pending_count == 1 else "i"
+    lines = [
+        f"📊 Recap TWAP {coin} (id {twap_id})",
+        f"{pending_count} esecuzion{plurale} in questo periodo: {side} {pending_sz:g} {coin} @ media {pending_avg:g}",
+        f"Eseguito totale sul TWAP finora: {cum_executed_sz:g} {coin} @ media {cum_avg_px:g}",
+    ]
 
     if target and target.get("total_sz"):
         try:
@@ -266,18 +279,20 @@ def format_twap_message(
             f"Prezzo attuale {coin}: {current_mid:g} (differenza vs media: {segno}{diff:g}, {segno}{diff_pct:.2f}%)"
         )
 
-    lines.append(f"Orario ultima slice: {fmt_ts(last_ts)}")
+    if period_start:
+        lines.append(f"Periodo: {fmt_ts(period_start)} → {fmt_ts(period_end)}")
     return "\n".join(lines)
 
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str, dry_run: bool = False) -> None:
+    full_text = f"{MESSAGE_SEPARATOR}\n{text}"
     if dry_run:
         print("--- [DRY RUN] messaggio che verrebbe inviato ---")
-        print(text)
+        print(full_text)
         print("-------------------------------------------------")
         return
     url = TELEGRAM_API_URL.format(token=bot_token)
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {"chat_id": chat_id, "text": full_text}
     http_post_json(url, payload)
 
 
@@ -294,13 +309,18 @@ def main() -> int:
 
     state_file = os.environ.get("STATE_FILE", DEFAULT_STATE_FILE)
     lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES))
+    recap_interval_ms = int(os.environ.get("TWAP_RECAP_MINUTES", DEFAULT_TWAP_RECAP_MINUTES)) * 60 * 1000
 
     now_ms = int(time.time() * 1000)
     state = load_state(state_file)
 
     last_time_ms = state.get("last_time_ms")
     seen_tids = set(state.get("seen_tids", []))
-    twap_progress = state.get("twap_progress", {})  # str(twap_id) -> {"executed_sz":..., "notional":...}
+    # str(twap_id) -> {"executed_sz","notional" (cumulativi di tutta la vita
+    # del TWAP), "pending_sz","pending_notional","pending_count",
+    # "period_start_ms","last_ms" (accumulo del periodo di recap corrente,
+    # azzerato dopo ogni recap inviato con successo), "coin", "side"}.
+    twap_progress = state.get("twap_progress", {})
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -321,67 +341,114 @@ def main() -> int:
     max_time_seen = last_time_ms or start_time_ms
     latest_tids = list(seen_tids)
 
-    if new_fills:
-        mids = fetch_all_mids()
+    regular_new = [f for f in new_fills if not f.get("twapId")]
+    twap_new = [f for f in new_fills if f.get("twapId")]
 
-        regular_new = [f for f in new_fills if not f.get("twapId")]
-        twap_new = [f for f in new_fills if f.get("twapId")]
-
-        messages = []
-
-        # Ordini normali: raggruppati per oid (piu' fill dello stesso ordine
-        # nello stesso giro di controllo diventano un unico messaggio).
+    # --- Ordini normali: notifica immediata ad ogni controllo, come prima ---
+    if regular_new:
         by_oid = defaultdict(list)
         for f in regular_new:
             by_oid[f.get("oid")].append(f)
         for oid, group in by_oid.items():
-            messages.append((group, format_order_message(group)))
-
-        # Slice TWAP: raggruppate per twapId, con progresso cumulato salvato
-        # nello stato tra un run e l'altro.
-        by_twap = defaultdict(list)
-        for f in twap_new:
-            by_twap[f.get("twapId")].append(f)
-        for twap_id, group in by_twap.items():
-            key = str(twap_id)
-            cum = twap_progress.get(key, {"executed_sz": 0.0, "notional": 0.0})
-            for f in group:
-                sz = float(f.get("sz", 0))
-                px = float(f.get("px", 0))
-                cum["executed_sz"] = cum.get("executed_sz", 0.0) + sz
-                cum["notional"] = cum.get("notional", 0.0) + sz * px
-            twap_progress[key] = cum
-
-            coin = group[0].get("coin", "?")
-            current_mid = None
-            if coin in mids:
-                try:
-                    current_mid = float(mids[coin])
-                except (TypeError, ValueError):
-                    current_mid = None
-
-            try:
-                target = fetch_twap_target(wallet, twap_id)
-            except Exception as e:
-                # Best-effort: questo dato non deve mai far fallire la
-                # notifica principale, nel dubbio si omette la % di
-                # completamento.
-                print(f"AVVISO: impossibile recuperare il target del TWAP {twap_id}: {e}", file=sys.stderr)
-                target = None
-            messages.append((group, format_twap_message(twap_id, group, cum, current_mid, target)))
-
-        for group, text in messages:
+            text = format_order_message(group)
             try:
                 send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
             except Exception as e:
-                oids = {f.get("tid") for f in group}
-                print(f"ERRORE invio Telegram per tid in {oids}: {e}", file=sys.stderr)
+                print(f"ERRORE invio Telegram (ordine oid={oid}): {e}", file=sys.stderr)
                 continue
             for f in group:
                 tid = f.get("tid")
                 if tid is not None:
                     latest_tids.append(tid)
                 max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
+
+    # --- Slice TWAP: accumulo silenzioso ad ogni controllo (nessun invio) ---
+    if twap_new:
+        by_twap = defaultdict(list)
+        for f in twap_new:
+            by_twap[f.get("twapId")].append(f)
+        for twap_id, group in by_twap.items():
+            key = str(twap_id)
+            prog = twap_progress.get(
+                key,
+                {
+                    "executed_sz": 0.0,
+                    "notional": 0.0,
+                    "pending_sz": 0.0,
+                    "pending_notional": 0.0,
+                    "pending_count": 0,
+                    "period_start_ms": None,
+                    "last_ms": None,
+                },
+            )
+            for f in group:
+                sz = float(f.get("sz", 0))
+                px = float(f.get("px", 0))
+                prog["executed_sz"] = prog.get("executed_sz", 0.0) + sz
+                prog["notional"] = prog.get("notional", 0.0) + sz * px
+                prog["pending_sz"] = prog.get("pending_sz", 0.0) + sz
+                prog["pending_notional"] = prog.get("pending_notional", 0.0) + sz * px
+                prog["pending_count"] = prog.get("pending_count", 0) + 1
+                if prog.get("period_start_ms") is None:
+                    prog["period_start_ms"] = f.get("time")
+                prog["last_ms"] = f.get("time")
+            prog["coin"] = group[0].get("coin", "?")
+            prog["side"] = group[0].get("side", "")
+            twap_progress[key] = prog
+
+            # Le slice TWAP sono "viste" (niente ri-conteggio al prossimo
+            # giro) anche se non mandiamo ancora nessun messaggio: sono gia'
+            # state incorporate nell'accumulo cumulativo.
+            for f in group:
+                tid = f.get("tid")
+                if tid is not None:
+                    latest_tids.append(tid)
+                max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
+
+    # --- Recap TWAP: solo quelli il cui periodo di accumulo ha superato
+    # TWAP_RECAP_MINUTES, indipendentemente dal fatto che questo giro abbia
+    # trovato nuove slice o meno (un TWAP puo' aver accumulato slice in giri
+    # precedenti e diventare "scaduto" anche in un giro senza fill nuovi). ---
+    due_recaps = [
+        (key, prog)
+        for key, prog in twap_progress.items()
+        if prog.get("pending_count", 0) > 0
+        and prog.get("period_start_ms") is not None
+        and (now_ms - prog["period_start_ms"]) >= recap_interval_ms
+    ]
+
+    if due_recaps:
+        mids = fetch_all_mids()
+        for key, prog in due_recaps:
+            coin = prog.get("coin", "?")
+            current_mid = None
+            if coin in mids:
+                try:
+                    current_mid = float(mids[coin])
+                except (TypeError, ValueError):
+                    current_mid = None
+            try:
+                target = fetch_twap_target(wallet, key)
+            except Exception as e:
+                # Best-effort: questo dato non deve mai far fallire il
+                # recap, nel dubbio si omette la % di completamento.
+                print(f"AVVISO: impossibile recuperare il target del TWAP {key}: {e}", file=sys.stderr)
+                target = None
+
+            text = format_twap_recap_message(key, prog, current_mid, target)
+            try:
+                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
+            except Exception as e:
+                print(f"ERRORE invio Telegram (recap TWAP {key}): {e}", file=sys.stderr)
+                continue  # riprova al prossimo giro, l'accumulo resta intatto
+
+            # Azzera l'accumulo del periodo solo se l'invio e' andato a
+            # buon fine, altrimenti si riprova al giro successivo.
+            prog["pending_sz"] = 0.0
+            prog["pending_notional"] = 0.0
+            prog["pending_count"] = 0
+            prog["period_start_ms"] = None
+            twap_progress[key] = prog
 
     # Tieni solo i tid recenti per non far crescere il file all'infinito.
     latest_tids = latest_tids[-500:]
