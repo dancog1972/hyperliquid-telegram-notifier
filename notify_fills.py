@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 Hyperliquid -> Telegram fill notifier.
 
@@ -84,6 +84,12 @@ DEFAULT_TWAP_RECAP_MINUTES = 60
 # Riga divisoria messa in cima ad ogni messaggio Telegram, cosi' notifiche
 # ravvicinate restano visivamente distinte invece di confondersi.
 MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖"
+
+# Barra piu' vistosa (Telegram non supporta colori nel testo dei messaggi
+# dei bot, quindi si usa un emoji a blocco colorato ben visibile) usata solo
+# per l'intestazione "nuovo aggiornamento", cosi' risalta rispetto alle
+# notifiche vere e proprie che la seguono.
+UPDATE_HEADER_BAR = "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧"
 
 
 def env_or_die(name: str) -> str:
@@ -338,7 +344,10 @@ def format_update_header(now_ms: int) -> str:
         dt = datetime.utcfromtimestamp(now_ms / 1000)
         tz_label = " UTC"
     mese = ITALIAN_MONTHS[dt.month - 1]
-    return f"🕐 Nuovo aggiornamento — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}"
+    return (
+        f"🕐 NUOVO AGGIORNAMENTO — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
+        f"{UPDATE_HEADER_BAR}"
+    )
 
 
 def format_new_twap_message(record: dict) -> str:
@@ -367,8 +376,10 @@ def format_new_twap_message(record: dict) -> str:
     return "\n".join(lines)
 
 
-def send_telegram_message(bot_token: str, chat_id: str, text: str, dry_run: bool = False) -> None:
-    full_text = f"{MESSAGE_SEPARATOR}\n{text}"
+def send_telegram_message(
+    bot_token: str, chat_id: str, text: str, dry_run: bool = False, separator: str = MESSAGE_SEPARATOR
+) -> None:
+    full_text = f"{separator}\n{text}"
     if dry_run:
         print("--- [DRY RUN] messaggio che verrebbe inviato ---")
         print(full_text)
@@ -587,7 +598,9 @@ def main() -> int:
     # messaggi accodati, in ordine. ---
     if outgoing:
         try:
-            send_telegram_message(bot_token, chat_id, format_update_header(now_ms), dry_run=dry_run)
+            send_telegram_message(
+                bot_token, chat_id, format_update_header(now_ms), dry_run=dry_run, separator=UPDATE_HEADER_BAR
+            )
         except Exception as e:
             # L'intestazione e' solo cosmetica: un suo eventuale fallimento
             # non deve bloccare l'invio delle notifiche vere e proprie.
