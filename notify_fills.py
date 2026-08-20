@@ -2,11 +2,21 @@
 """
 Hyperliquid -> Telegram fill notifier.
 
-Interroga l'endpoint REST /info di Hyperliquid (userFillsByTime) per un
-wallet, confronta i fill ricevuti con l'ultimo stato salvato su disco e
-manda un messaggio Telegram per ogni nuova esecuzione (fill) trovata:
-acquisto/vendita a limite, stop-loss/take-profit scattati, ecc. -- qualsiasi
-ordine che genera un fill sull'account viene notificato.
+Interroga l'endpoint REST /info di Hyperliquid (userFillsByTime +
+userTwapSliceFills) per un wallet, confronta i fill ricevuti con l'ultimo
+stato salvato su disco e manda un messaggio Telegram per le nuove
+esecuzioni trovate:
+
+- Ordini normali (limite, stop, mercato): un messaggio con l'eseguito
+  TOTALE dell'ordine (media prezzo, size totale), con il dettaglio delle
+  singole esecuzioni sotto se sono state più di una nello stesso giro di
+  controllo.
+- Slice di ordini TWAP: un messaggio per ogni nuovo gruppo di slice
+  eseguite, con progresso cumulato del TWAP (quanto eseguito finora,
+  prezzo medio) e differenza rispetto al prezzo di mercato attuale. La
+  percentuale di completamento rispetto alla size totale del TWAP viene
+  mostrata solo se Hyperliquid espone quel dato in modo verificabile;
+  altrimenti quella riga viene omessa (mai mostrato un numero indovinato).
 
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
 schedulato), non come processo always-on.
@@ -30,12 +40,20 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from collections import defaultdict
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 DEFAULT_STATE_FILE = "state/last_fill.json"
 DEFAULT_LOOKBACK_MINUTES = 15
+
+# Nomi di "type" candidati per recuperare lo stato dei TWAP (size totale,
+# eseguito, durata). Non c'e' modo di verificare con certezza quale sia
+# quello corretto senza un test dal vivo, quindi li proviamo in ordine e
+# usiamo il primo che risponde con dati sensati. Se nessuno funziona, la
+# percentuale di completamento viene semplicemente omessa dai messaggi.
+TWAP_STATE_TYPE_CANDIDATES = ["userTwapHistory", "twapHistory"]
 
 
 def env_or_die(name: str) -> str:
@@ -75,12 +93,16 @@ def fetch_fills(wallet: str, start_time_ms: int, end_time_ms: int) -> list:
     return result
 
 
-def fetch_twap_slice_fills(wallet: str, start_time_ms: int) -> list:
+def fetch_twap_slice_fills(wallet: str, start_time_ms: int, end_time_ms: int) -> list:
     """Le esecuzioni di ordini TWAP NON compaiono in userFills/userFillsByTime:
     Hyperliquid le espone solo tramite questo endpoint separato, con uno
-    schema annidato ({"fill": {...}, "twapId": N}) e senza filtro temporale
-    lato server. Filtriamo qui in locale usando start_time_ms."""
-    payload = {"type": "userTwapSliceFills", "user": wallet}
+    schema annidato ({"fill": {...}, "twapId": N})."""
+    payload = {
+        "type": "userTwapSliceFillsByTime",
+        "user": wallet,
+        "startTime": start_time_ms,
+        "endTime": end_time_ms,
+    }
     result = http_post_json(HL_INFO_URL, payload)
     if not isinstance(result, list):
         raise RuntimeError(f"Risposta inattesa da Hyperliquid (TWAP): {result!r}")
@@ -91,9 +113,51 @@ def fetch_twap_slice_fills(wallet: str, start_time_ms: int) -> list:
         if not fill:
             continue
         fill["twapId"] = item.get("twapId")
-        if fill.get("time", 0) >= start_time_ms:
-            fills.append(fill)
+        fills.append(fill)
     return fills
+
+
+def fetch_all_mids() -> dict:
+    """Prezzi mid correnti per (quasi) tutte le coin. Best-effort: in caso
+    di errore ritorna un dizionario vuoto, cosi' i messaggi funzionano
+    comunque senza la riga "prezzo attuale"."""
+    try:
+        result = http_post_json(HL_INFO_URL, {"type": "allMids"})
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare i prezzi correnti (allMids): {e}", file=sys.stderr)
+    return {}
+
+
+def fetch_twap_target(wallet: str, twap_id) -> dict | None:
+    """Prova a recuperare la size totale target e la durata di un TWAP
+    specifico, per calcolare quanto manca al completamento. Best-effort:
+    lo schema esatto della risposta non e' verificabile senza un test dal
+    vivo, quindi qualunque cosa non torni chiaramente interpretabile viene
+    scartata silenziosamente (nessun numero indovinato)."""
+    for type_name in TWAP_STATE_TYPE_CANDIDATES:
+        try:
+            result = http_post_json(HL_INFO_URL, {"type": type_name, "user": wallet})
+        except Exception:
+            continue
+        records = result if isinstance(result, list) else result.get("records") if isinstance(result, dict) else None
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            rec_id = record.get("twapId", record.get("id"))
+            state = record.get("state") if isinstance(record.get("state"), dict) else record
+            if rec_id != twap_id and state.get("twapId") != twap_id:
+                continue
+            total_sz = state.get("sz")
+            executed_sz = state.get("executedSz")
+            minutes = state.get("minutes")
+            if total_sz is None:
+                continue
+            return {"total_sz": total_sz, "executed_sz": executed_sz, "minutes": minutes}
+    return None
 
 
 def load_state(path: str) -> dict:
@@ -113,36 +177,96 @@ def save_state(path: str, state: dict) -> None:
         f.write("\n")
 
 
-def format_message(fill: dict) -> str:
-    coin = fill.get("coin", "?")
-    side_raw = fill.get("side", "")
-    side = "BUY" if side_raw == "B" else "SELL" if side_raw == "A" else side_raw
-    px = fill.get("px", "?")
-    sz = fill.get("sz", "?")
-    direction = fill.get("dir", "")
-    closed_pnl = fill.get("closedPnl", "0")
-    fee = fill.get("fee", "0")
-    fee_token = fill.get("feeToken", "")
-    ts_ms = fill.get("time", 0)
-    ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts_ms / 1000)) if ts_ms else "?"
+def side_label(side_raw: str) -> str:
+    return "BUY" if side_raw == "B" else "SELL" if side_raw == "A" else side_raw
 
-    twap_id = fill.get("twapId")
 
-    lines = [
-        f"✅ Eseguito su Hyperliquid: {side} {sz} {coin} @ {px}",
-    ]
-    if twap_id:
-        lines.append(f"Slice di ordine TWAP (id: {twap_id})")
+def fmt_ts(ts_ms) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts_ms / 1000)) if ts_ms else "?"
+
+
+def weighted_avg_price(fills: list) -> float:
+    total_sz = sum(float(f.get("sz", 0)) for f in fills)
+    if total_sz == 0:
+        return 0.0
+    return sum(float(f.get("px", 0)) * float(f.get("sz", 0)) for f in fills) / total_sz
+
+
+def format_order_message(fills: list) -> str:
+    """Messaggio per un ordine normale (non TWAP): totale eseguito, con il
+    dettaglio delle singole esecuzioni se sono state piu' di una."""
+    first = fills[0]
+    coin = first.get("coin", "?")
+    side = side_label(first.get("side", ""))
+    direction = first.get("dir", "")
+
+    total_sz = sum(float(f.get("sz", 0)) for f in fills)
+    avg_px = weighted_avg_price(fills)
+    total_fee = sum(float(f.get("fee", 0) or 0) for f in fills)
+    fee_token = first.get("feeToken", "")
+    total_closed_pnl = sum(float(f.get("closedPnl", 0) or 0) for f in fills)
+    last_ts = max(f.get("time", 0) for f in fills)
+
+    lines = [f"✅ Eseguito totale: {side} {total_sz:g} {coin} @ {avg_px:g} (media)"]
     if direction:
         lines.append(f"Tipo: {direction}")
-    try:
-        if float(closed_pnl) != 0:
-            lines.append(f"PnL realizzato: {closed_pnl} USDC")
-    except (TypeError, ValueError):
-        pass
-    if fee and fee_token:
-        lines.append(f"Fee: {fee} {fee_token}")
-    lines.append(f"Orario: {ts}")
+    if total_closed_pnl != 0:
+        lines.append(f"PnL realizzato: {total_closed_pnl:g} USDC")
+    if total_fee and fee_token:
+        lines.append(f"Fee totale: {total_fee:g} {fee_token}")
+    lines.append(f"Orario ultima esecuzione: {fmt_ts(last_ts)}")
+
+    if len(fills) > 1:
+        lines.append(f"↳ {len(fills)} esecuzioni:")
+        for f in sorted(fills, key=lambda x: x.get("time", 0)):
+            lines.append(
+                f"   - {float(f.get('sz', 0)):g} @ {float(f.get('px', 0)):g} "
+                f"({fmt_ts(f.get('time', 0))})"
+            )
+    return "\n".join(lines)
+
+
+def format_twap_message(
+    twap_id, batch_fills: list, cumulative: dict, current_mid: float | None, target: dict | None
+) -> str:
+    first = batch_fills[0]
+    coin = first.get("coin", "?")
+    side = side_label(first.get("side", ""))
+    last_ts = max(f.get("time", 0) for f in batch_fills)
+
+    cum_executed_sz = cumulative["executed_sz"]
+    cum_avg_px = cumulative["notional"] / cum_executed_sz if cum_executed_sz else 0.0
+
+    lines = [f"⏱️ TWAP {coin} (id {twap_id}) — nuova slice eseguita: {side} {sum(float(f.get('sz', 0)) for f in batch_fills):g} @ {weighted_avg_price(batch_fills):g}"]
+    if len(batch_fills) > 1:
+        lines.append(f"↳ {len(batch_fills)} esecuzioni in questo controllo:")
+        for f in sorted(batch_fills, key=lambda x: x.get("time", 0)):
+            lines.append(
+                f"   - {float(f.get('sz', 0)):g} @ {float(f.get('px', 0)):g} "
+                f"({fmt_ts(f.get('time', 0))})"
+            )
+
+    lines.append(f"Eseguito finora sul TWAP: {cum_executed_sz:g} {coin} @ media {cum_avg_px:g}")
+
+    if target and target.get("total_sz"):
+        try:
+            total_sz = float(target["total_sz"])
+            if total_sz > 0:
+                pct = min(100.0, cum_executed_sz / total_sz * 100)
+                remaining = max(0.0, total_sz - cum_executed_sz)
+                lines.append(f"Completamento TWAP: {pct:.1f}% (mancano circa {remaining:g} {coin})")
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    if current_mid is not None and cum_avg_px:
+        diff = current_mid - cum_avg_px
+        diff_pct = (diff / cum_avg_px * 100) if cum_avg_px else 0
+        segno = "+" if diff >= 0 else ""
+        lines.append(
+            f"Prezzo attuale {coin}: {current_mid:g} (differenza vs media: {segno}{diff:g}, {segno}{diff_pct:.2f}%)"
+        )
+
+    lines.append(f"Orario ultima slice: {fmt_ts(last_ts)}")
     return "\n".join(lines)
 
 
@@ -176,6 +300,7 @@ def main() -> int:
 
     last_time_ms = state.get("last_time_ms")
     seen_tids = set(state.get("seen_tids", []))
+    twap_progress = state.get("twap_progress", {})  # str(twap_id) -> {"executed_sz":..., "notional":...}
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -186,33 +311,89 @@ def main() -> int:
         start_time_ms = last_time_ms - 1000
 
     fills = fetch_fills(wallet, start_time_ms, now_ms)
-    twap_fills = fetch_twap_slice_fills(wallet, start_time_ms)
-    fills = fills + twap_fills
-    fills.sort(key=lambda f: (f.get("time", 0), f.get("tid", 0)))
+    twap_fills = fetch_twap_slice_fills(wallet, start_time_ms, now_ms)
+    all_fills = fills + twap_fills
+    all_fills.sort(key=lambda f: (f.get("time", 0), f.get("tid", 0)))
 
-    new_fills = [f for f in fills if f.get("tid") not in seen_tids]
-
-    print(f"Trovati {len(fills)} fill nell'intervallo, {len(new_fills)} nuovi.")
+    new_fills = [f for f in all_fills if f.get("tid") not in seen_tids]
+    print(f"Trovati {len(all_fills)} fill nell'intervallo, {len(new_fills)} nuovi.")
 
     max_time_seen = last_time_ms or start_time_ms
     latest_tids = list(seen_tids)
 
-    for fill in new_fills:
-        text = format_message(fill)
-        try:
-            send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
-        except Exception as e:
-            print(f"ERRORE invio Telegram per tid={fill.get('tid')}: {e}", file=sys.stderr)
-            continue
-        tid = fill.get("tid")
-        if tid is not None:
-            latest_tids.append(tid)
-        max_time_seen = max(max_time_seen, fill.get("time", max_time_seen))
+    if new_fills:
+        mids = fetch_all_mids()
+
+        regular_new = [f for f in new_fills if not f.get("twapId")]
+        twap_new = [f for f in new_fills if f.get("twapId")]
+
+        messages = []
+
+        # Ordini normali: raggruppati per oid (piu' fill dello stesso ordine
+        # nello stesso giro di controllo diventano un unico messaggio).
+        by_oid = defaultdict(list)
+        for f in regular_new:
+            by_oid[f.get("oid")].append(f)
+        for oid, group in by_oid.items():
+            messages.append((group, format_order_message(group)))
+
+        # Slice TWAP: raggruppate per twapId, con progresso cumulato salvato
+        # nello stato tra un run e l'altro.
+        by_twap = defaultdict(list)
+        for f in twap_new:
+            by_twap[f.get("twapId")].append(f)
+        for twap_id, group in by_twap.items():
+            key = str(twap_id)
+            cum = twap_progress.get(key, {"executed_sz": 0.0, "notional": 0.0})
+            for f in group:
+                sz = float(f.get("sz", 0))
+                px = float(f.get("px", 0))
+                cum["executed_sz"] = cum.get("executed_sz", 0.0) + sz
+                cum["notional"] = cum.get("notional", 0.0) + sz * px
+            twap_progress[key] = cum
+
+            coin = group[0].get("coin", "?")
+            current_mid = None
+            if coin in mids:
+                try:
+                    current_mid = float(mids[coin])
+                except (TypeError, ValueError):
+                    current_mid = None
+
+            try:
+                target = fetch_twap_target(wallet, twap_id)
+            except Exception as e:
+                # Best-effort: questo dato non deve mai far fallire la
+                # notifica principale, nel dubbio si omette la % di
+                # completamento.
+                print(f"AVVISO: impossibile recuperare il target del TWAP {twap_id}: {e}", file=sys.stderr)
+                target = None
+            messages.append((group, format_twap_message(twap_id, group, cum, current_mid, target)))
+
+        for group, text in messages:
+            try:
+                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
+            except Exception as e:
+                oids = {f.get("tid") for f in group}
+                print(f"ERRORE invio Telegram per tid in {oids}: {e}", file=sys.stderr)
+                continue
+            for f in group:
+                tid = f.get("tid")
+                if tid is not None:
+                    latest_tids.append(tid)
+                max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
 
     # Tieni solo i tid recenti per non far crescere il file all'infinito.
     latest_tids = latest_tids[-500:]
 
-    save_state(state_file, {"last_time_ms": max_time_seen, "seen_tids": latest_tids})
+    save_state(
+        state_file,
+        {
+            "last_time_ms": max_time_seen,
+            "seen_tids": latest_tids,
+            "twap_progress": twap_progress,
+        },
+    )
     return 0
 
 
