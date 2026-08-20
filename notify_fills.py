@@ -7,19 +7,27 @@ userTwapSliceFills) per un wallet, confronta i fill ricevuti con l'ultimo
 stato salvato su disco e manda un messaggio Telegram per le nuove
 esecuzioni trovate:
 
+- Nuovo TWAP avviato (🆕): non appena un TWAP compare sull'account (anche
+  prima che scatti la sua prima slice), un messaggio con coin, lato, size
+  target e durata prevista -- se Hyperliquid espone questi dati in modo
+  verificabile (best-effort: l'endpoint usato non e' documentato con
+  certezza, in caso di dubbio la rilevazione viene semplicemente saltata).
 - Ordini normali (limite, stop, mercato): notifica IMMEDIATA (🚨) ad ogni
   controllo se c'e' qualcosa di nuovo, con l'eseguito TOTALE dell'ordine
   (media prezzo, size totale) e il dettaglio delle singole esecuzioni sotto
   se sono state piu' di una nello stesso giro di controllo.
-- Slice di ordini TWAP: NESSuna notifica ad ogni slice (sarebbero troppe).
-  Le slice vengono accumulate silenziosamente, e una volta ogni
-  TWAP_RECAP_MINUTES (default 60) viene mandato un unico messaggio di
-  recap per ciascun TWAP attivo con esecuzioni in quel periodo: quante
-  slice, size totale ed eseguito cumulato del TWAP, differenza rispetto al
-  prezzo di mercato attuale. La percentuale di completamento rispetto alla
-  size totale del TWAP viene mostrata solo se Hyperliquid espone quel dato
-  in modo verificabile; altrimenti quella riga viene omessa (mai mostrato
-  un numero indovinato).
+- Slice di ordini TWAP gia' avviati: NESSuna notifica ad ogni slice
+  (sarebbero troppe). Le slice vengono accumulate silenziosamente, e una
+  volta ogni TWAP_RECAP_MINUTES (default 60) viene mandato un unico
+  messaggio di recap (📊) per ciascun TWAP attivo con esecuzioni in quel
+  periodo: quante slice, size totale ed eseguito cumulato del TWAP,
+  differenza rispetto al prezzo di mercato attuale. La percentuale di
+  completamento rispetto alla size totale del TWAP viene mostrata solo se
+  disponibile; altrimenti quella riga viene omessa (mai mostrato un numero
+  indovinato).
+
+Ogni messaggio Telegram e' preceduto da una riga separatrice, per restare
+visivamente distinto anche quando le notifiche arrivano ravvicinate.
 
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
 schedulato / trigger esterno), non come processo always-on.
@@ -141,34 +149,56 @@ def fetch_all_mids() -> dict:
     return {}
 
 
-def fetch_twap_target(wallet: str, twap_id) -> dict | None:
-    """Prova a recuperare la size totale target e la durata di un TWAP
-    specifico, per calcolare quanto manca al completamento. Best-effort:
-    lo schema esatto della risposta non e' verificabile senza un test dal
-    vivo, quindi qualunque cosa non torni chiaramente interpretabile viene
-    scartata silenziosamente (nessun numero indovinato)."""
+def fetch_twap_records(wallet: str) -> list:
+    """Ritorna la lista (normalizzata) dei TWAP dell'utente -- attivi e
+    passati -- con qualunque campo si riesca a interpretare in modo
+    affidabile: twap_id, coin, side, total_sz (size target), minutes
+    (durata), status, start_ms.
+
+    Best-effort e best-guess: il nome esatto di questo endpoint e il suo
+    schema non sono documentati in modo verificabile, quindi si provano piu'
+    candidati e si scartano silenziosamente i campi che non si riescono a
+    interpretare con sicurezza (mai un dato indovinato). Ritorna [] se
+    nessun candidato risponde in modo utilizzabile -- in tal caso sia il
+    rilevamento "nuovo TWAP" sia la % di completamento nei recap vengono
+    semplicemente omessi, senza far fallire il resto della notifica."""
     for type_name in TWAP_STATE_TYPE_CANDIDATES:
         try:
             result = http_post_json(HL_INFO_URL, {"type": type_name, "user": wallet})
         except Exception:
             continue
-        records = result if isinstance(result, list) else result.get("records") if isinstance(result, dict) else None
-        if not isinstance(records, list):
+        raw_records = result if isinstance(result, list) else result.get("records") if isinstance(result, dict) else None
+        if not isinstance(raw_records, list):
             continue
-        for record in records:
+
+        parsed = []
+        for record in raw_records:
             if not isinstance(record, dict):
                 continue
-            rec_id = record.get("twapId", record.get("id"))
             state = record.get("state") if isinstance(record.get("state"), dict) else record
-            if rec_id != twap_id and state.get("twapId") != twap_id:
+            twap_id = record.get("twapId", record.get("id", state.get("twapId")))
+            if twap_id is None:
                 continue
-            total_sz = state.get("sz")
-            executed_sz = state.get("executedSz")
-            minutes = state.get("minutes")
-            if total_sz is None:
-                continue
-            return {"total_sz": total_sz, "executed_sz": executed_sz, "minutes": minutes}
-    return None
+            status = record.get("status")
+            if isinstance(status, dict):
+                status = status.get("status")
+            elif not isinstance(status, str):
+                status = None
+            parsed.append(
+                {
+                    "twap_id": twap_id,
+                    "coin": state.get("coin"),
+                    "side": state.get("side"),
+                    "total_sz": state.get("sz"),
+                    "executed_sz": state.get("executedSz"),
+                    "minutes": state.get("minutes"),
+                    "status": status,
+                    "start_ms": record.get("time", state.get("timestamp")),
+                }
+            )
+        if parsed:
+            return parsed
+    return []
 
 
 def load_state(path: str) -> dict:
@@ -284,6 +314,32 @@ def format_twap_recap_message(twap_id, prog: dict, current_mid: float | None, ta
     return "\n".join(lines)
 
 
+def format_new_twap_message(record: dict) -> str:
+    """Messaggio inviato non appena un nuovo TWAP viene rilevato (avviato),
+    prima ancora che scatti la sua prima slice."""
+    twap_id = record.get("twap_id")
+    coin = record.get("coin") or "?"
+    side = side_label(record.get("side") or "")
+
+    header = f"🆕 Nuovo TWAP avviato: {side} {coin}".rstrip()
+    total_sz = record.get("total_sz")
+    if total_sz is not None:
+        try:
+            header += f" — size totale {float(total_sz):g}"
+        except (TypeError, ValueError):
+            pass
+
+    lines = [header]
+    if record.get("minutes"):
+        lines.append(f"Durata prevista: {record['minutes']} minuti")
+    if record.get("status"):
+        lines.append(f"Stato: {record['status']}")
+    if record.get("start_ms"):
+        lines.append(f"Avviato: {fmt_ts(record['start_ms'])}")
+    lines.append(f"ID TWAP: {twap_id}")
+    return "\n".join(lines)
+
+
 def send_telegram_message(bot_token: str, chat_id: str, text: str, dry_run: bool = False) -> None:
     full_text = f"{MESSAGE_SEPARATOR}\n{text}"
     if dry_run:
@@ -321,6 +377,45 @@ def main() -> int:
     # "period_start_ms","last_ms" (accumulo del periodo di recap corrente,
     # azzerato dopo ogni recap inviato con successo), "coin", "side"}.
     twap_progress = state.get("twap_progress", {})
+    is_very_first_run = "known_twap_ids" not in state
+    known_twap_ids_list = [str(x) for x in state.get("known_twap_ids", [])]
+    known_twap_ids = set(known_twap_ids_list)
+
+    # Un'unica chiamata di rete (best-effort) usata sia per rilevare TWAP
+    # appena avviati sia, piu' sotto, come sorgente per la % di
+    # completamento nei recap -- evita di richiamare l'endpoint TWAP una
+    # volta per ogni TWAP attivo.
+    try:
+        twap_records = fetch_twap_records(wallet)
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare l'elenco dei TWAP: {e}", file=sys.stderr)
+        twap_records = []
+    twap_records_by_id = {str(r["twap_id"]): r for r in twap_records}
+
+    if is_very_first_run:
+        # Primissimo run in assoluto per questa funzionalita': non
+        # notificare come "nuovi" i TWAP gia' esistenti/passati, altrimenti
+        # si riceve una raffica di notifiche per tutta la storia
+        # dell'account. Si "conoscono" silenziosamente e si notificano solo
+        # i TWAP che compariranno da qui in avanti.
+        for tid_str in twap_records_by_id:
+            if tid_str not in known_twap_ids:
+                known_twap_ids.add(tid_str)
+                known_twap_ids_list.append(tid_str)
+        if twap_records_by_id:
+            print(f"Primo run: {len(twap_records_by_id)} TWAP esistenti registrati senza notifica.")
+    else:
+        for tid_str, record in twap_records_by_id.items():
+            if tid_str in known_twap_ids:
+                continue
+            text = format_new_twap_message(record)
+            try:
+                send_telegram_message(bot_token, chat_id, text, dry_run=dry_run)
+            except Exception as e:
+                print(f"ERRORE invio Telegram (nuovo TWAP {tid_str}): {e}", file=sys.stderr)
+                continue  # riprova al prossimo giro
+            known_twap_ids.add(tid_str)
+            known_twap_ids_list.append(tid_str)
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -427,13 +522,10 @@ def main() -> int:
                     current_mid = float(mids[coin])
                 except (TypeError, ValueError):
                     current_mid = None
-            try:
-                target = fetch_twap_target(wallet, key)
-            except Exception as e:
-                # Best-effort: questo dato non deve mai far fallire il
-                # recap, nel dubbio si omette la % di completamento.
-                print(f"AVVISO: impossibile recuperare il target del TWAP {key}: {e}", file=sys.stderr)
-                target = None
+            # Riusa i record TWAP gia' scaricati a inizio run (nessuna
+            # chiamata di rete aggiuntiva per ogni recap).
+            record = twap_records_by_id.get(key)
+            target = {"total_sz": record["total_sz"]} if record and record.get("total_sz") is not None else None
 
             text = format_twap_recap_message(key, prog, current_mid, target)
             try:
@@ -450,8 +542,9 @@ def main() -> int:
             prog["period_start_ms"] = None
             twap_progress[key] = prog
 
-    # Tieni solo i tid recenti per non far crescere il file all'infinito.
+    # Tieni solo i piu' recenti per non far crescere il file all'infinito.
     latest_tids = latest_tids[-500:]
+    known_twap_ids_list = known_twap_ids_list[-500:]
 
     save_state(
         state_file,
@@ -459,6 +552,7 @@ def main() -> int:
             "last_time_ms": max_time_seen,
             "seen_tids": latest_tids,
             "twap_progress": twap_progress,
+            "known_twap_ids": known_twap_ids_list,
         },
     )
     return 0
