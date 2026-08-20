@@ -1,0 +1,48 @@
+name: Hyperliquid -> Telegram notifier
+
+on:
+  schedule:
+    # Ogni 10 minuti. GitHub puo' ritardare l'esecuzione sotto carico: non e'
+    # garanzia di puntualita' al minuto, ma va benissimo per questo scopo.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+    # Permette anche di lanciarlo a mano dalla tab "Actions" del repo,
+    # utile per un primo test.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hyperliquid-notify
+  cancel-in-progress: false
+
+jobs:
+  check-fills:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Esegui lo script di notifica
+        env:
+          HL_WALLET_ADDRESS: ${{ secrets.HL_WALLET_ADDRESS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python notify_fills.py
+
+      - name: Salva lo stato aggiornato (commit)
+        run: |
+          git config user.name "hyperliquid-notifier-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/last_fill.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Aggiorna stato ultimo fill notificato [skip ci]"
+            git push
+          else
+            echo "Nessuna modifica allo stato, niente da committare."
+          fi
