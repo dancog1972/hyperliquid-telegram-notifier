@@ -105,9 +105,13 @@ def format_message(fill: dict) -> str:
     ts_ms = fill.get("time", 0)
     ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts_ms / 1000)) if ts_ms else "?"
 
+    twap_id = fill.get("twapId")
+
     lines = [
         f"✅ Eseguito su Hyperliquid: {side} {sz} {coin} @ {px}",
     ]
+    if twap_id:
+        lines.append(f"Slice di ordine TWAP (id: {twap_id})")
     if direction:
         lines.append(f"Tipo: {direction}")
     try:
