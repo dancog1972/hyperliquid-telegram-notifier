@@ -319,11 +319,9 @@
     "1258197",
     "2122602"
   ],
-  "last_time_ms": 1787312050014,
+  "last_time_ms": 1787313010028,
   "next_recap_due_ms": 1787316035474,
   "seen_tids": [
-    789234496250026,
-    58807196617339,
     772840201974397,
     204774169139841,
     851658124198530,
@@ -821,29 +819,31 @@
     111021939865576,
     854253190811627,
     623320672786422,
-    713181208414198
+    713181208414198,
+    403749144969350,
+    181227716616288
   ],
   "twap_progress": {
     "2115076": {
       "coin": "BTC",
-      "executed_sz": 0.013610000000000002,
-      "last_ms": 1787312050014,
-      "notional": 1011.5918800000004,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 0.013780000000000002,
+      "last_ms": 1787313010028,
+      "notional": 1024.6347900000003,
+      "pending_count": 1,
+      "pending_notional": 13.042910000000001,
+      "pending_sz": 0.00017,
+      "period_start_ms": 1787313010028,
       "side": "A"
     },
     "2115950": {
       "coin": "PUMP",
-      "executed_sz": 188251.0,
-      "last_ms": 1787311544042,
-      "notional": 717.3898189999999,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 191276.0,
+      "last_ms": 1787312744009,
+      "notional": 729.7590439999999,
+      "pending_count": 1,
+      "pending_notional": 12.369225,
+      "pending_sz": 3025.0,
+      "period_start_ms": 1787312744009,
       "side": "A"
     },
     "2116274": {
