@@ -324,15 +324,17 @@
     "2127509"
   ],
   "last_time_ms": 1787355322017,
-  "next_recap_due_ms": 1787355635474,
+  "next_recap_due_ms": 1787359235474,
   "seen_tids": [
+    810096409235881,
+    290320064801912,
     301668707603603,
     62421418355861,
     1103588575388825,
     1115217507054746,
-    371129837528220,
     122968240538780,
     1046346854214812,
+    371129837528220,
     238385716984989,
     524252789851296,
     655775832345761,
@@ -394,13 +396,13 @@
     542445112900853,
     366990548552950,
     4547727416566,
-    649098477239544,
     69871191741688,
-    399820363232506,
-    363569341332731,
-    1002986391985401,
+    649098477239544,
     164736275979514,
     845572807132411,
+    1002986391985401,
+    399820363232506,
+    363569341332731,
     372515356583164,
     787786660166912,
     865988600517889,
@@ -823,9 +825,7 @@
     623320672786422,
     713181208414198,
     520280522147834,
-    1048716289791996,
-    810096409235881,
-    290320064801912
+    1048716289791996
   ],
   "twap_progress": {
     "2115076": {
@@ -833,10 +833,10 @@
       "executed_sz": 0.021180000000000015,
       "last_ms": 1787354860067,
       "notional": 1598.14519,
-      "pending_count": 3,
-      "pending_notional": 37.704480000000004,
-      "pending_sz": 0.00048000000000000007,
-      "period_start_ms": 1787353060046,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "A"
     },
     "2115950": {
@@ -844,10 +844,10 @@
       "executed_sz": 295441.0,
       "last_ms": 1787355014022,
       "notional": 1150.3153289999996,
-      "pending_count": 2,
-      "pending_notional": 24.738919000000003,
-      "pending_sz": 6158.0,
-      "period_start_ms": 1787353754038,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "A"
     },
     "2116274": {
@@ -866,10 +866,10 @@
       "executed_sz": 7173.0,
       "last_ms": 1787355322017,
       "notional": 679.1824949999998,
-      "pending_count": 2,
-      "pending_notional": 23.39186,
-      "pending_sz": 215.0,
-      "period_start_ms": 1787353552029,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     },
     "2121371": {
@@ -899,10 +899,10 @@
       "executed_sz": 5982.0,
       "last_ms": 1787355236008,
       "notional": 808.5052,
-      "pending_count": 5,
-      "pending_notional": 58.4892,
-      "pending_sz": 451.0,
-      "period_start_ms": 1787352956054,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     },
     "2126383": {
@@ -910,10 +910,10 @@
       "executed_sz": 20700.0,
       "last_ms": 1787354197016,
       "notional": 2191.3712610000002,
-      "pending_count": 20,
-      "pending_notional": 235.22558000000004,
-      "pending_sz": 2158.0,
-      "period_start_ms": 1787352667066,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     },
     "2127509": {
