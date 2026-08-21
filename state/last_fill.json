@@ -320,11 +320,9 @@
     "2122602",
     "2125593"
   ],
-  "last_time_ms": 1787323196017,
-  "next_recap_due_ms": 1787323235474,
+  "last_time_ms": 1787323706026,
+  "next_recap_due_ms": 1787326835474,
   "seen_tids": [
-    692024380818171,
-    738632129594110,
     162033757287169,
     702983901571843,
     590074206669576,
@@ -553,6 +551,7 @@
     827158711657745,
     65704293723410,
     571308192904467,
+    726633744592142,
     990868743750937,
     731058183744799,
     1115854473532703,
@@ -625,8 +624,8 @@
     70192794856904,
     290567894928842,
     1121416859784663,
-    472255886958042,
     208628861928922,
+    472255886958042,
     456553241810395,
     429442499778013,
     297408349894112,
@@ -821,19 +820,20 @@
     854253190811627,
     623320672786422,
     713181208414198,
-    668380277956757,
-    726633744592142
+    46724571044943,
+    707449831757065,
+    1027498238524876
   ],
   "twap_progress": {
     "2115076": {
       "coin": "BTC",
-      "executed_sz": 0.015480000000000002,
-      "last_ms": 1787322610040,
-      "notional": 1155.6153700000002,
-      "pending_count": 3,
-      "pending_notional": 39.269830000000006,
-      "pending_sz": 0.00051,
-      "period_start_ms": 1787320690003,
+      "executed_sz": 0.015650000000000004,
+      "last_ms": 1787323570042,
+      "notional": 1168.75059,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "A"
     },
     "2115950": {
@@ -841,10 +841,10 @@
       "executed_sz": 215459.0,
       "last_ms": 1787322614006,
       "notional": 828.7221049999998,
-      "pending_count": 4,
-      "pending_notional": 24.741045,
-      "pending_sz": 5956.0,
-      "period_start_ms": 1787321384080,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "A"
     },
     "2116274": {
@@ -860,13 +860,13 @@
     },
     "2121365": {
       "coin": "PURR",
-      "executed_sz": 5112.0,
-      "last_ms": 1787321662012,
-      "notional": 468.3288019999999,
-      "pending_count": 1,
-      "pending_notional": 11.6885,
-      "pending_sz": 125.0,
-      "period_start_ms": 1787321662012,
+      "executed_sz": 5233.0,
+      "last_ms": 1787323672047,
+      "notional": 480.0089319999999,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     },
     "2121371": {
@@ -893,13 +893,13 @@
     },
     "2125593": {
       "coin": "CASHCAT",
-      "executed_sz": 920.0,
-      "last_ms": 1787323196017,
-      "notional": 128.81669,
-      "pending_count": 6,
-      "pending_notional": 70.26697,
-      "pending_sz": 500.0,
-      "period_start_ms": 1787320526029,
+      "executed_sz": 1001.0,
+      "last_ms": 1787323706026,
+      "notional": 140.52605,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     }
   }
