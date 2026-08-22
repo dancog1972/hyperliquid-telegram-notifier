@@ -327,10 +327,12 @@
     "2131854"
   ],
   "last_time_ms": 1787434630064,
-  "next_recap_due_ms": 1787434835474,
+  "next_recap_due_ms": 1787438435474,
   "seen_tids": [
-    555021212990906,
+    990119139836428,
+    1057747475911291,
     250901322229177,
+    555021212990906,
     1019574469639610,
     989082460503487,
     626580817876415,
@@ -826,9 +828,7 @@
     520280522147834,
     971896032978939,
     1048716289791996,
-    897263439448063,
-    990119139836428,
-    1057747475911291
+    897263439448063
   ],
   "twap_progress": {
     "2115076": {
@@ -836,10 +836,10 @@
       "executed_sz": 0.035310000000000064,
       "last_ms": 1787434630064,
       "notional": 2693.215580000002,
-      "pending_count": 3,
-      "pending_notional": 39.35449,
-      "pending_sz": 0.00051,
-      "period_start_ms": 1787432710058,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "A"
     },
     "2115950": {
@@ -946,10 +946,10 @@
       "executed_sz": 5487.0,
       "last_ms": 1787434510046,
       "notional": 538.8400109999997,
-      "pending_count": 3,
-      "pending_notional": 35.208873,
-      "pending_sz": 369.0,
-      "period_start_ms": 1787432650052,
+      "pending_count": 0,
+      "pending_notional": 0.0,
+      "pending_sz": 0.0,
+      "period_start_ms": null,
       "side": "B"
     },
     "2131854": {
