@@ -59,10 +59,22 @@ vengono processati solo i messaggi che arrivano dalla chat configurata in
 TELEGRAM_CHAT_ID: comandi da altre chat vengono ignorati.
 
 Alert di prezzo (🔔): ad ogni controllo, se ci sono alert attivi, il
-prezzo attuale (allMids) viene confrontato con la soglia impostata. Se
-scattato, arriva una notifica automatica e l'alert viene rimosso (va
-reimpostato con /alert se lo si vuole di nuovo attivo) -- niente
-notifiche ripetute per lo stesso alert.
+prezzo attuale (allMids) viene confrontato con la soglia impostata. Cosa
+succede quando scatta dipende dal fatto che tu abbia o meno una posizione
+APERTA su quella coin in quel momento:
+- SENZA posizione aperta: notifica una volta sola e l'alert viene rimosso
+  (va reimpostato con /alert se lo si vuole di nuovo attivo) -- come
+  prima.
+- CON una posizione aperta: la notifica include anche un riepilogo della
+  posizione (direzione, size, entry vs prezzo attuale, PnL, prezzo di
+  liquidazione) e l'alert NON viene rimosso -- continua a ripetersi ad
+  ogni controllo finche' la condizione resta vera E la posizione resta
+  aperta. Si ferma da solo, con un ultimo messaggio dedicato, alla prima
+  delle due condizioni che viene meno: il prezzo torna oltre la soglia
+  ("✅ Allarme rientrato") oppure la posizione viene chiusa ("🔕 Alert
+  disattivato"). Con un intervallo di controllo breve questo puo'
+  generare piu' notifiche ravvicinate finche' la condizione persiste --
+  e' il comportamento voluto per un alert legato a una posizione aperta.
 
 Ogni messaggio del bot porta anche una tastiera Telegram persistente
 ("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
@@ -440,15 +452,64 @@ def format_alerts_list_message(alerts: list) -> str:
                 pct_txt = f" ({float(a['pct']):g}% dal prezzo di {float(a.get('ref_price', 0)):g})"
             except (TypeError, ValueError):
                 pct_txt = f" ({a['pct']}%)"
-        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}")
+        stato_txt = " 🔴 IN ALLARME" if a.get("triggered") else ""
+        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}{stato_txt}")
     lines.append("\nPer rimuoverne uno: /delalert <id>")
     return "\n".join(lines)
 
 
-def format_alert_triggered_message(alert: dict, current_price: float) -> str:
-    """Notifica automatica mandata quando un alert di prezzo scatta.
-    L'alert viene rimosso dopo l'invio (vedi main()): niente notifiche
-    ripetute per la stessa soglia."""
+def format_position_summary(pos: dict, current_price) -> str:
+    """Riassunto compatto di una posizione (usato nei messaggi di alert):
+    direzione, size, entry vs prezzo attuale, PnL, prezzo di liquidazione.
+    Parsing difensivo come nel resto del modulo -- righe omesse quando il
+    dato non e' interpretabile con sicurezza."""
+    try:
+        szi = float(pos.get("szi", 0))
+    except (TypeError, ValueError):
+        szi = 0.0
+    direction = "LONG" if szi > 0 else "SHORT"
+    header = f"Posizione: {direction} {abs(szi):g}"
+
+    try:
+        entry_px = float(pos.get("entryPx")) if pos.get("entryPx") is not None else None
+    except (TypeError, ValueError):
+        entry_px = None
+    lines = []
+    if entry_px is not None:
+        header += f" @ entry {entry_px:g}"
+        if current_price is not None and entry_px:
+            diff_pct = (float(current_price) - entry_px) / entry_px * 100
+            if szi < 0:  # short: si guadagna quando il prezzo scende
+                diff_pct = -diff_pct
+            segno = "+" if diff_pct >= 0 else ""
+            lines.append(f"vs entry: {segno}{diff_pct:.2f}%")
+    lines.insert(0, header)
+
+    try:
+        unrealized_pnl = float(pos.get("unrealizedPnl")) if pos.get("unrealizedPnl") is not None else None
+    except (TypeError, ValueError):
+        unrealized_pnl = None
+    if unrealized_pnl is not None:
+        segno = "+" if unrealized_pnl >= 0 else ""
+        lines.append(f"PnL non realizzato: {segno}{unrealized_pnl:g} USDC")
+
+    liq_px = pos.get("liquidationPx")
+    if liq_px is not None:
+        try:
+            lines.append(f"Prezzo di liquidazione: {float(liq_px):g}")
+        except (TypeError, ValueError):
+            pass
+
+    return "\n".join(lines)
+
+
+def format_alert_triggered_message(alert: dict, current_price: float, position: dict | None = None, repeated: bool = False) -> str:
+    """Notifica automatica mandata quando un alert di prezzo scatta (o
+    resta attivo). Se c'e' una posizione aperta su quella coin, l'alert
+    resta attivo e questa notifica si ripete ad ogni controllo finche' la
+    condizione persiste E la posizione resta aperta -- vedi main() per la
+    logica di stato ("triggered") e format_alert_cleared_message per come
+    si ferma."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
@@ -458,11 +519,33 @@ def format_alert_triggered_message(alert: dict, current_price: float) -> str:
             extra = f" ({float(alert['pct']):g}% dal prezzo di {float(alert.get('ref_price', 0)):g})"
         except (TypeError, ValueError):
             extra = f" ({alert['pct']}%)"
-    return (
-        f"🔔 Alert scattato: {coin} {verso} {threshold:g}{extra}\n"
-        f"Prezzo attuale: {current_price:g}\n"
-        f"(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)"
-    )
+    header = "🔔 Alert ancora attivo" if repeated else "🔔 Alert scattato"
+    lines = [f"{header}: {coin} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
+    if position is not None:
+        lines.append(format_position_summary(position, current_price))
+        lines.append(
+            "(ti aggiorno ad ogni controllo finche' resti in questa condizione o chiudi la posizione — "
+            "arriva un ultimo messaggio quando l'allarme rientra)"
+        )
+    else:
+        lines.append("(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)")
+    return "\n".join(lines)
+
+
+def format_alert_cleared_message(alert: dict, current_price: float, reason: str) -> str:
+    """Notifica mandata quando un alert "attivo" (con posizione collegata,
+    vedi format_alert_triggered_message) smette di ripetersi: perche' il
+    prezzo e' rientrato oltre la soglia (reason="recovered") o perche' la
+    posizione e' stata chiusa (reason="position_closed"). L'alert viene
+    rimosso subito dopo (vedi main())."""
+    coin = alert.get("coin", "?")
+    threshold = alert.get("price", 0)
+    if reason == "position_closed":
+        head = f"🔕 Alert disattivato: la posizione su {coin} e' stata chiusa."
+    else:
+        verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
+        head = f"✅ Allarme rientrato: {coin} e' {verso_rientro} {threshold:g}."
+    return f"{head}\nPrezzo attuale: {current_price:g}\n(non ricevi più notifiche per questo alert)"
 
 
 def load_state(path: str) -> dict:
@@ -864,7 +947,14 @@ def main() -> int:
                 return f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid. Controlla il ticker."
             price = value
 
-        alert = {"id": next_alert_id, "coin": coin, "direction": direction, "price": price, "created_ms": now_ms}
+        alert = {
+            "id": next_alert_id,
+            "coin": coin,
+            "direction": direction,
+            "price": price,
+            "created_ms": now_ms,
+            "triggered": False,
+        }
         if pct is not None:
             alert["pct"] = pct
             alert["ref_price"] = ref_price
@@ -984,15 +1074,33 @@ def main() -> int:
                     latest_tids.append(tid)
                 max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
 
-    def make_alert_fired_cb(alert_id):
+    def make_alert_remove_cb(alert_id):
         def cb():
             price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
         return cb
 
+    def make_alert_mark_active_cb(alert):
+        def cb():
+            alert["triggered"] = True
+        return cb
+
+    def noop_cb():
+        pass
+
     # --- Alert di prezzo: confronto col prezzo attuale (allMids, una sola
-    # chiamata per tutti gli alert) solo se ce n'e' almeno uno attivo. Alert
-    # scattato -> notifica automatica in coda, rimosso solo se l'invio va a
-    # buon fine (stessa logica di retry-al-prossimo-giro del resto). ---
+    # chiamata per tutti gli alert) solo se ce n'e' almeno uno attivo.
+    # Comportamento:
+    # - Alert non ancora scattato la cui condizione si avvera: se c'e' una
+    #   posizione aperta su quella coin, l'alert diventa "attivo"
+    #   (triggered=True) e NON viene rimosso -- restera' attivo finche' la
+    #   condizione persiste E la posizione resta aperta. Senza posizione,
+    #   si comporta come prima: notifica una volta e viene rimosso.
+    # - Alert gia' "attivo": ripete la notifica ad ogni controllo finche'
+    #   la condizione resta vera E la posizione resta aperta; si ferma (con
+    #   un messaggio dedicato) alla prima delle due condizioni che viene
+    #   meno -- prezzo rientrato oltre la soglia, o posizione chiusa.
+    # Le mutazioni avvengono solo via on_success, cosi' un invio fallito
+    # viene ritentato al giro successivo (stessa logica del resto). ---
     if price_alerts:
         mids_for_alerts = get_mids()
         for alert in price_alerts:
@@ -1006,17 +1114,53 @@ def main() -> int:
             except (TypeError, ValueError):
                 continue
             direction = alert.get("direction")
-            fired = (direction == "below" and current_price <= threshold) or (
+            condition_met = (direction == "below" and current_price <= threshold) or (
                 direction == "above" and current_price >= threshold
             )
-            if not fired:
-                continue
-            outgoing.append(
-                {
-                    "text": format_alert_triggered_message(alert, current_price),
-                    "on_success": make_alert_fired_cb(alert.get("id")),
-                }
-            )
+
+            if alert.get("triggered"):
+                position = next(
+                    (p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None
+                )
+                if position is None:
+                    outgoing.append(
+                        {
+                            "text": format_alert_cleared_message(alert, current_price, "position_closed"),
+                            "on_success": make_alert_remove_cb(alert.get("id")),
+                        }
+                    )
+                elif not condition_met:
+                    outgoing.append(
+                        {
+                            "text": format_alert_cleared_message(alert, current_price, "recovered"),
+                            "on_success": make_alert_remove_cb(alert.get("id")),
+                        }
+                    )
+                else:
+                    outgoing.append(
+                        {
+                            "text": format_alert_triggered_message(alert, current_price, position, repeated=True),
+                            "on_success": noop_cb,
+                        }
+                    )
+            elif condition_met:
+                position = next(
+                    (p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None
+                )
+                if position is not None:
+                    outgoing.append(
+                        {
+                            "text": format_alert_triggered_message(alert, current_price, position, repeated=False),
+                            "on_success": make_alert_mark_active_cb(alert),
+                        }
+                    )
+                else:
+                    outgoing.append(
+                        {
+                            "text": format_alert_triggered_message(alert, current_price, None, repeated=False),
+                            "on_success": make_alert_remove_cb(alert.get("id")),
+                        }
+                    )
 
     # --- Invio delle notifiche automatiche: intestazione di aggiornamento
     # (solo se c'e' davvero qualcosa da mandare in questo giro) seguita da
