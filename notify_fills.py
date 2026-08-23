@@ -135,6 +135,27 @@ il riepilogo posizioni periodico. Le risposte ai comandi Telegram (es.
 separatrice neutra, per restare visivamente distinte senza per questo
 sembrare una notifica automatica.
 
+Ogni ticker citato (in comandi E notifiche automatiche: /twap, /positions,
+/alerts, alert scattati/rientrati, fill, nuovi TWAP) e' un link cliccabile
+verso la pagina di trading/grafico del token su Hyperliquid, con il nome
+del ticker stesso come testo del link (es. "BTC" diventa un link chiamato
+"BTC", non testo semplice) -- vedi ticker_mention/render_ticker_links/
+build_hyperliquid_chart_url. Per questo i messaggi vengono inviati con
+parse_mode="HTML" (Telegram): il rendering dei link avviene SOLO dentro
+send_telegram_message, dopo il troncamento per il limite di lunghezza (cosi'
+un troncamento non spezza mai un tag HTML a meta') e con html.escape() di
+tutto il resto del testo (compresi eventuali messaggi di errore o altro
+testo esterno interpolato), cosi' non e' mai possibile che del testo
+imprevisto rompa l'HTML o generi un link non voluto. Le URL usate sono
+best-effort: per i PERPS e' confermato il formato
+https://app.hyperliquid.xyz/trade/{COIN}; per lo SPOT e' confermato solo
+per le coppie "canoniche" (es. PURR/USDC, HYPE/USDC) nella forma
+https://app.hyperliquid.xyz/trade/{COIN}/USDC -- per i ticker spot NON
+canonici (la maggioranza, es. CAT) lo stesso formato viene usato per
+estrapolazione ma NON e' stato possibile verificarlo dal vivo in questo
+ambiente di sviluppo (nessun accesso al browser): se un link spot non
+canonico apre il mercato sbagliato, va segnalato.
+
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
 schedulato / trigger esterno), non come processo always-on.
 
@@ -151,18 +172,24 @@ Variabili opzionali:
                          primo run.
 """
 
+import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_GETUPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
+# Pagina di trading/grafico su Hyperliquid per un ticker (vedi
+# build_hyperliquid_chart_url/ticker_mention piu' sotto).
+HYPERLIQUID_TRADE_URL_BASE = "https://app.hyperliquid.xyz/trade"
 
 DEFAULT_STATE_FILE = "state/last_fill.json"
 DEFAULT_LOOKBACK_MINUTES = 15
@@ -170,7 +197,7 @@ DEFAULT_LOOKBACK_MINUTES = 15
 # invece di rimandare la notifica ad ogni singolo giro (ogni minuto), la
 # ripetiamo solo ogni N giri, per non intasare la chat. Il primo avviso
 # resta immediato; solo i "promemoria" successivi vengono diradati.
-DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 10
+DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 5
 # Il throttle a N giri sopra vale solo se il prezzo resta "vicino" alla
 # soglia (entro questa percentuale, calcolata rispetto alla soglia
 # stessa): se invece se ne allontana di piu' (condizione piu' severa),
@@ -694,12 +721,25 @@ def format_spot_balances_block(spot_state: dict, mids: dict, spot_meta: dict | N
             hidden_count += 1
             continue
         value_txt = f" (~{total * price:g} USDC)" if price is not None else ""
-        lines.append(f"— {coin}: {total:g}{value_txt}")
+        lines.append(f"— {ticker_mention(coin, kind='spot')}: {total:g}{value_txt}")
     if len(lines) == 1:  # solo l'intestazione "💰 Saldi spot:" -> nulla sopra soglia
         return None
     if hidden_count:
         lines.append(f"({hidden_count} saldo/i sotto i {MIN_VALUE_USD_TO_SHOW:g} USDC non mostrato/i)")
     return "\n".join(lines)
+
+
+def alert_ticker_kind(alert: dict) -> str:
+    """Determina se il ticker di un alert e' PERPS o SPOT in base alla
+    "mids_key" salvata su di esso (risolta in try_create_alert -- vedi
+    resolve_spot_mid_key): se e' diversa dal ticker stesso, e' stata
+    risolta passando per lo spot, quindi e' spot; altrimenti (o se manca,
+    come per gli alert creati prima di questa modifica) si assume perps,
+    il caso piu' comune -- usato per decidere il link cliccabile del
+    ticker (vedi ticker_mention/build_hyperliquid_chart_url)."""
+    coin = alert.get("coin")
+    mids_key = alert.get("mids_key")
+    return "spot" if (mids_key and mids_key != coin) else "perp"
 
 
 def format_alerts_list_message(alerts: list, mids: dict | None = None, spot_meta: dict | None = None) -> str:
@@ -736,7 +776,8 @@ def format_alerts_list_message(alerts: list, mids: dict | None = None, spot_meta
             current_price = get_price_for_coin(mids_key, mids, spot_meta) if mids_key else None
             if current_price is not None:
                 current_txt = f" (attuale: {current_price:g})"
-        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}{current_txt}{stato_txt}")
+        coin_link = ticker_mention(a.get("coin"), kind=alert_ticker_kind(a))
+        lines.append(f"— id {a.get('id')}: {coin_link} {verso} {price_txt}{pct_txt}{current_txt}{stato_txt}")
     lines.append("\nPer rimuoverne uno: /delalert <id>")
     return "\n".join(lines)
 
@@ -792,12 +833,13 @@ def format_spot_holding_summary(balance: dict, current_price) -> str:
     price o prezzo di liquidazione -- solo quantita' e, se current_price e'
     disponibile, controvalore stimato in USDC."""
     coin = balance.get("coin", "?")
+    coin_link = ticker_mention(coin, kind="spot")
     total = balance.get("total", 0)
     try:
         total_f = float(total)
     except (TypeError, ValueError):
-        return f"Saldo spot: {total} {coin}"
-    line = f"Saldo spot: {total_f:g} {coin}"
+        return f"Saldo spot: {total} {coin_link}"
+    line = f"Saldo spot: {total_f:g} {coin_link}"
     if current_price is not None:
         try:
             line += f" (~{total_f * float(current_price):g} USDC)"
@@ -840,7 +882,8 @@ def format_alert_triggered_message(
         except (TypeError, ValueError):
             extra = f" ({alert['pct']}%)"
     header = "🔔 Alert ancora attivo" if repeated else "🔔 Alert scattato"
-    lines = [f"{header}: {coin} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
+    coin_link = ticker_mention(coin, kind=alert_ticker_kind(alert))
+    lines = [f"{header}: {coin_link} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
     holding_line = None
     if position is not None:
         holding_line = format_position_summary(position, current_price)
@@ -881,12 +924,13 @@ def format_alert_cleared_message(alert: dict, current_price: float, reason: str)
       l'alert viene rimosso per davvero stavolta."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
+    coin_link = ticker_mention(coin, kind=alert_ticker_kind(alert))
     if reason == "holding_closed":
-        head = f"🔕 Alert disattivato: non hai più né una posizione né un saldo spot su {coin}."
+        head = f"🔕 Alert disattivato: non hai più né una posizione né un saldo spot su {coin_link}."
         footer = "(non ricevi più notifiche per questo alert)"
     else:
         verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
-        head = f"✅ Allarme rientrato: {coin} e' {verso_rientro} {threshold:g}."
+        head = f"✅ Allarme rientrato: {coin_link} e' {verso_rientro} {threshold:g}."
         footer = "(l'alert resta attivo: ti avviso di nuovo se la soglia scatta ancora)"
     return f"{head}\nPrezzo attuale: {current_price:g}\n{footer}"
 
@@ -938,7 +982,7 @@ def format_order_message(fills: list) -> str:
     total_closed_pnl = sum(float(f.get("closedPnl", 0) or 0) for f in fills)
     last_ts = max(f.get("time", 0) for f in fills)
 
-    lines = [f"🚨 Eseguito totale: {side} {total_sz:g} {coin} @ {avg_px:g} (media)"]
+    lines = [f"🚨 Eseguito totale: {side} {total_sz:g} {ticker_mention(coin, kind='perp')} @ {avg_px:g} (media)"]
     if direction:
         lines.append(f"Tipo: {direction}")
     if total_closed_pnl != 0:
@@ -985,7 +1029,7 @@ def format_new_twap_message(record: dict) -> str:
     coin = record.get("coin") or "?"
     side = side_label(record.get("side") or "")
 
-    header = f"🆕 Nuovo TWAP avviato: {side} {coin}".rstrip()
+    header = f"🆕 Nuovo TWAP avviato: {side} {ticker_mention(coin, kind='perp')}".rstrip()
     total_sz = record.get("total_sz")
     if total_sz is not None:
         try:
@@ -1041,7 +1085,7 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
 
     blocks = ["📊 Riepilogo TWAP per coin:"]
     for coin in sorted(per_coin.keys()):
-        coin_lines = [f"— {coin}:"]
+        coin_lines = [f"— {ticker_mention(coin, kind='perp')}:"]
         current_mid = None
         if coin in mids:
             try:
@@ -1157,7 +1201,7 @@ def format_positions_message(
         leverage = pos.get("leverage")
         lev_value = leverage.get("value") if isinstance(leverage, dict) else leverage
 
-        header = f"— {coin}: {direction} {abs_sz:g}"
+        header = f"— {ticker_mention(coin, kind='perp')}: {direction} {abs_sz:g}"
         if lev_value:
             header += f" ({lev_value}x)"
         lines = [header]
@@ -1256,6 +1300,67 @@ def truncate_for_telegram(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -
     return text[:cut] + marker
 
 
+# Segnaposto (caratteri di controllo invisibili, non usati in nessun testo
+# normale) creati da ticker_mention() ed espansi in link HTML veri e
+# propri da render_ticker_links -- vedi li' per i dettagli di sicurezza.
+_TICKER_MARKER_RE = re.compile(r"\x01([^\x01\x02|]{1,30})\|(spot|perp)\x02")
+
+
+def build_hyperliquid_chart_url(coin: str, kind: str = "perp") -> str:
+    """URL della pagina di trading/grafico su Hyperliquid per un ticker.
+    Per i PERPS (kind="perp"): app.hyperliquid.xyz/trade/<COIN> --
+    formato confermato (es. /trade/BTC). Per lo SPOT (kind="spot"):
+    app.hyperliquid.xyz/trade/<COIN>/USDC -- confermato per le coppie
+    "canoniche" con nome leggibile (es. PURR/USDC, HYPE/USDC); per i
+    token spot NON canonici (la maggior parte, identificati internamente
+    da un id posizionale "@N" invece del ticker -- vedi
+    resolve_spot_mid_key) questo e' un'ESTRAPOLAZIONE best-effort NON
+    verificata in modo diretto (nessun accesso browser dal vivo
+    disponibile per testarlo in questo ambiente): se per un token del
+    genere il link non apre il mercato giusto, e' qui che va corretto."""
+    safe_coin = urllib.parse.quote(coin, safe="")
+    if kind == "spot":
+        return f"{HYPERLIQUID_TRADE_URL_BASE}/{safe_coin}/USDC"
+    return f"{HYPERLIQUID_TRADE_URL_BASE}/{safe_coin}"
+
+
+def ticker_mention(coin, kind: str = "perp") -> str:
+    """Segnaposto per un ticker che, nel messaggio finale, diventa un link
+    HTML cliccabile al grafico Hyperliquid del token (vedi
+    render_ticker_links, applicato da send_telegram_message subito prima
+    dell'invio). Va usato al posto di interpolare `coin` direttamente nel
+    testo di un messaggio, ovunque compaia un ticker. kind="spot" per i
+    token spot, "perp" (default) per i perps -- vedi
+    build_hyperliquid_chart_url per come influenza l'URL generato."""
+    if not coin:
+        return str(coin)
+    return f"\x01{coin}|{kind}\x02"
+
+
+def render_ticker_links(text: str) -> str:
+    """Espande i segnaposto creati da ticker_mention() in veri link HTML
+    cliccabili, ed esegue l'escape HTML (&, <, >) di TUTTO il resto del
+    testo -- incluso qualunque contenuto esterno imprevedibile finito nel
+    messaggio (es. il testo grezzo di un'eccezione riportato all'utente).
+    Cosi' un link puo' comparire SOLO dove lo abbiamo messo esplicitamente
+    noi via ticker_mention(), mai per errore a partire da testo esterno, e
+    nessun carattere imprevisto puo' rompere il parsing HTML di Telegram
+    (parse_mode="HTML", vedi send_telegram_message). Un segnaposto tagliato
+    a meta' da truncate_for_telegram (troncamento applicato PRIMA di
+    questa funzione, apposta) resta semplicemente testo normale invece di
+    rompere l'HTML -- degrado sicuro."""
+    parts = []
+    last_end = 0
+    for m in _TICKER_MARKER_RE.finditer(text):
+        parts.append(html.escape(text[last_end:m.start()], quote=False))
+        coin, kind = m.group(1), m.group(2)
+        url = build_hyperliquid_chart_url(coin, kind)
+        parts.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(coin, quote=False)}</a>')
+        last_end = m.end()
+    parts.append(html.escape(text[last_end:], quote=False))
+    return "".join(parts)
+
+
 def send_telegram_message(
     bot_token: str,
     chat_id: str,
@@ -1268,8 +1373,12 @@ def send_telegram_message(
     pulsanti /twap e /positions (vedi COMMAND_KEYBOARD) cosi' resta sempre
     visibile; passare reply_markup=None per un messaggio senza tastiera.
     Il testo finale viene troncato se supera il limite di Telegram (vedi
-    truncate_for_telegram) invece di far fallire l'invio in silenzio."""
+    truncate_for_telegram) invece di far fallire l'invio in silenzio, POI
+    convertito in HTML (vedi render_ticker_links) per rendere cliccabili i
+    ticker inseriti con ticker_mention() -- l'ordine (tronca prima,
+    espandi i link dopo) evita di tagliare un tag HTML a meta'."""
     full_text = truncate_for_telegram(f"{separator}\n{text}")
+    full_text = render_ticker_links(full_text)
     if dry_run:
         print("--- [DRY RUN] messaggio che verrebbe inviato ---")
         print(full_text)
@@ -1278,7 +1387,12 @@ def send_telegram_message(
         print("-------------------------------------------------")
         return
     url = TELEGRAM_API_URL.format(token=bot_token)
-    payload = {"chat_id": chat_id, "text": full_text}
+    payload = {
+        "chat_id": chat_id,
+        "text": full_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
     if reply_markup:
         payload["reply_markup"] = reply_markup
     http_post_json(url, payload)
@@ -1447,7 +1561,8 @@ def main() -> int:
         next_alert_id += 1
         verso = "scende sotto" if direction == "below" else "sale sopra"
         extra = f" ({pct:g}% dal prezzo di {ref_price:g})" if pct is not None else ""
-        confirmation = f"🔔 Alert impostato: ti avviso quando {coin} {verso} {price:g}{extra} (id {alert['id']})."
+        coin_link = ticker_mention(coin, kind="spot" if mids_key != coin else "perp")
+        confirmation = f"🔔 Alert impostato: ti avviso quando {coin_link} {verso} {price:g}{extra} (id {alert['id']})."
         # L'utente vuole rivedere subito l'elenco aggiornato ogni volta che
         # un alert viene aggiunto o modificato, non solo con /alerts.
         return f"{confirmation}\n\n{format_alerts_list_message(price_alerts, mids_now, get_spot_meta())}"
