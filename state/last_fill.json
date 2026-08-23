@@ -329,8 +329,8 @@
     "2133792"
   ],
   "last_time_ms": 1787494237021,
-  "last_update_id": 603631046,
-  "next_alert_id": 3,
+  "last_update_id": 603631047,
+  "next_alert_id": 4,
   "price_alerts": [
     {
       "coin": "HYPE",
@@ -338,6 +338,13 @@
       "direction": "below",
       "id": 1,
       "price": 79.0
+    },
+    {
+      "coin": "PURR",
+      "created_ms": 1787494461107,
+      "direction": "below",
+      "id": 3,
+      "price": 0.12
     }
   ],
   "seen_tids": [
