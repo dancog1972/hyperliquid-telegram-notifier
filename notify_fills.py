@@ -22,11 +22,15 @@ esecuzioni trovate:
   stato; per vederlo si usa il comando Telegram /twap (vedi sotto).
 
 Comandi Telegram (a richiesta, nessun invio automatico):
-  /twap                        Stato di tutti i TWAP con esecuzioni
-                                registrate o record noti: eseguito
-                                cumulato, % di completamento se
-                                disponibile, differenza rispetto al
-                                prezzo di mercato attuale.
+  /twap                        Riepilogo TWAP PER COIN/TICKER (un blocco
+                                per coin, BUY e SELL separati -- non un
+                                elenco di ogni singolo ordine TWAP): eseguito
+                                cumulato, prezzo medio, % di completamento se
+                                disponibile, differenza rispetto al prezzo di
+                                mercato attuale. I record grezzi del best-
+                                effort endpoint storico TWAP non vengono mai
+                                mostrati uno per uno (rischio di superare il
+                                limite di lunghezza di Telegram).
   /positions                   Posizioni perps aperte: size e direzione,
                                 entry vs prezzo attuale, PnL non
                                 realizzato, prezzo di liquidazione ed
@@ -41,7 +45,9 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 ("/alert BTC sotto 5%"), calcolata rispetto
                                 al prezzo di mercato attuale nel momento in
                                 cui l'alert viene creato (accetta anche
-                                "<"/">" al posto di sotto/sopra).
+                                "<"/">" al posto di sotto/sopra). La
+                                conferma include anche l'elenco aggiornato
+                                di tutti gli alert attivi.
   /newalert                     Crea un alert in modo guidato: il bot manda
                                 un messaggio-prompt (con "Rispondi"/"Reply"
                                 gia' pronto su Telegram) e basta scrivere
@@ -49,6 +55,8 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 risposta, senza dover ricordare /alert.
   /alerts                       Elenca gli alert di prezzo attivi.
   /delalert <id>                Rimuove un alert (l'id si vede con /alerts).
+                                La conferma include anche l'elenco
+                                aggiornato degli alert rimasti attivi.
 I comandi vengono letti tramite polling (Telegram getUpdates) alla stessa
 frequenza con cui gira lo script: la risposta arriva quindi al PROSSIMO
 controllo programmato, non istantaneamente (fino a qualche minuto di
@@ -67,14 +75,16 @@ APERTA su quella coin in quel momento:
   prima.
 - CON una posizione aperta: la notifica include anche un riepilogo della
   posizione (direzione, size, entry vs prezzo attuale, PnL, prezzo di
-  liquidazione) e l'alert NON viene rimosso -- continua a ripetersi ad
-  ogni controllo finche' la condizione resta vera E la posizione resta
-  aperta. Si ferma da solo, con un ultimo messaggio dedicato, alla prima
-  delle due condizioni che viene meno: il prezzo torna oltre la soglia
-  ("✅ Allarme rientrato") oppure la posizione viene chiusa ("🔕 Alert
-  disattivato"). Con un intervallo di controllo breve questo puo'
-  generare piu' notifiche ravvicinate finche' la condizione persiste --
-  e' il comportamento voluto per un alert legato a una posizione aperta.
+  liquidazione) e l'alert NON viene rimosso -- il primo avviso e' sempre
+  immediato, poi si ripete come "promemoria" ogni ALERT_REPEAT_EVERY_N_RUNS
+  controlli (variabile d'ambiente, default 5 -- non piu' ad ogni singolo
+  giro, per non intasare la chat) finche' la condizione resta vera E la
+  posizione resta aperta. Quando il prezzo torna oltre la soglia arriva un
+  ultimo messaggio ("✅ Allarme rientrato") ma l'alert RESTA ATTIVO
+  (mantenuto): torna solo "in ascolto" (e il contatore si azzera) e puo'
+  scattare di nuovo in futuro senza doverlo reimpostare. Si disattiva per
+  davvero (rimosso, "🔕 Alert disattivato") solo quando chiudi la posizione
+  -- a quel punto non c'e' piu' nulla da proteggere.
 
 Ogni messaggio del bot porta anche una tastiera Telegram persistente
 ("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
@@ -119,6 +129,11 @@ TELEGRAM_GETUPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
 DEFAULT_STATE_FILE = "state/last_fill.json"
 DEFAULT_LOOKBACK_MINUTES = 15
+# Una volta che un alert su una posizione aperta e' "scattato" (triggered),
+# invece di rimandare la notifica ad ogni singolo giro (ogni minuto), la
+# ripetiamo solo ogni N giri, per non intasare la chat. Il primo avviso
+# resta immediato; solo i "promemoria" successivi vengono diradati.
+DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 5
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento. Se il
 # database IANA non e' disponibile sul runner, si ricade su UTC senza far
@@ -503,13 +518,19 @@ def format_position_summary(pos: dict, current_price) -> str:
     return "\n".join(lines)
 
 
-def format_alert_triggered_message(alert: dict, current_price: float, position: dict | None = None, repeated: bool = False) -> str:
+def format_alert_triggered_message(
+    alert: dict,
+    current_price: float,
+    position: dict | None = None,
+    repeated: bool = False,
+    repeat_every_n_runs: int = DEFAULT_ALERT_REPEAT_EVERY_N_RUNS,
+) -> str:
     """Notifica automatica mandata quando un alert di prezzo scatta (o
     resta attivo). Se c'e' una posizione aperta su quella coin, l'alert
-    resta attivo e questa notifica si ripete ad ogni controllo finche' la
-    condizione persiste E la posizione resta aperta -- vedi main() per la
-    logica di stato ("triggered") e format_alert_cleared_message per come
-    si ferma."""
+    resta attivo e questa notifica si ripete ogni repeat_every_n_runs giri
+    (non ad ogni controllo) finche' la condizione persiste E la posizione
+    resta aperta -- vedi main() per la logica di stato ("triggered") e
+    format_alert_cleared_message per come si ferma."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
@@ -523,9 +544,10 @@ def format_alert_triggered_message(alert: dict, current_price: float, position: 
     lines = [f"{header}: {coin} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
     if position is not None:
         lines.append(format_position_summary(position, current_price))
+        cadenza = "questo e' il primo avviso" if not repeated else f"ti aggiorno ogni {repeat_every_n_runs} controlli"
         lines.append(
-            "(ti aggiorno ad ogni controllo finche' resti in questa condizione o chiudi la posizione — "
-            "arriva un ultimo messaggio quando l'allarme rientra)"
+            f"({cadenza} finche' resti in questa condizione; quando rientra ricevi un ultimo avviso e l'alert "
+            "resta attivo, pronto a scattare di nuovo — si disattiva solo se chiudi la posizione)"
         )
     else:
         lines.append("(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)")
@@ -534,18 +556,23 @@ def format_alert_triggered_message(alert: dict, current_price: float, position: 
 
 def format_alert_cleared_message(alert: dict, current_price: float, reason: str) -> str:
     """Notifica mandata quando un alert "attivo" (con posizione collegata,
-    vedi format_alert_triggered_message) smette di ripetersi: perche' il
-    prezzo e' rientrato oltre la soglia (reason="recovered") o perche' la
-    posizione e' stata chiusa (reason="position_closed"). L'alert viene
-    rimosso subito dopo (vedi main())."""
+    vedi format_alert_triggered_message) smette di ripetersi:
+    - reason="recovered": il prezzo e' rientrato oltre la soglia. L'alert
+      NON viene rimosso, torna solo "in ascolto" (vedi make_alert_rearm_cb
+      in main()) e puo' scattare di nuovo in futuro senza doverlo
+      reimpostare -- resta legato alla posizione finche' questa e' aperta.
+    - reason="position_closed": la posizione e' stata chiusa, non c'e' piu'
+      nulla da proteggere -- l'alert viene rimosso per davvero stavolta."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     if reason == "position_closed":
         head = f"🔕 Alert disattivato: la posizione su {coin} e' stata chiusa."
+        footer = "(non ricevi più notifiche per questo alert)"
     else:
         verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
         head = f"✅ Allarme rientrato: {coin} e' {verso_rientro} {threshold:g}."
-    return f"{head}\nPrezzo attuale: {current_price:g}\n(non ricevi più notifiche per questo alert)"
+        footer = "(l'alert resta attivo: ti avviso di nuovo se la soglia scatta ancora)"
+    return f"{head}\nPrezzo attuale: {current_price:g}\n{footer}"
 
 
 def load_state(path: str) -> dict:
@@ -660,80 +687,74 @@ def format_new_twap_message(record: dict) -> str:
     return "\n".join(lines)
 
 
-MAX_EXTRA_TWAP_RECORDS = 15
-
-
 def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mids: dict) -> str:
-    """Risposta al comando /twap: stato di ogni TWAP di cui abbiamo
-    esecuzioni accumulate, piu' (se ce ne sono ancora spazio) i record
-    noti piu' recenti senza esecuzioni. L'endpoint usato per i record e'
-    best-effort e su alcuni account restituisce anche moltissimo storico
-    passato: senza un limite il messaggio puo' superare il limite di
-    lunghezza di Telegram (~4096 caratteri) e l'invio fallisce in
-    silenzio dal punto di vista dell'utente -- da qui il tetto su quanti
-    record "extra" (senza esecuzioni note) vengono mostrati."""
-    progress_keys = list(twap_progress.keys())
-    extra_items = [(key, r) for key, r in twap_records_by_id.items() if key not in twap_progress]
-    extra_items.sort(key=lambda kv: kv[1].get("start_ms") or 0, reverse=True)
-    omitted_count = max(0, len(extra_items) - MAX_EXTRA_TWAP_RECORDS)
-    extra_keys = [key for key, _ in extra_items[:MAX_EXTRA_TWAP_RECORDS]]
+    """Risposta al comando /twap: un riepilogo PER TICKER (coin), non un
+    elenco di ogni singolo ordine TWAP. Somma l'eseguito cumulato di tutti
+    i TWAP con esecuzioni note (twap_progress) sulla stessa coin -- BUY e
+    SELL separati, non sommati insieme, per non falsare il totale se ci
+    sono TWAP di direzione opposta sulla stessa coin. I record "raw"
+    dell'endpoint TWAP (fetch_twap_records) sono usati solo per stimare la
+    % di completamento quando disponibile, MAI mostrati uno per uno: quel
+    best-effort endpoint puo' restituire anche moltissimo storico passato
+    e un elenco completo rischierebbe di superare il limite di lunghezza
+    di Telegram (vedi anche truncate_for_telegram, comunque una rete di
+    sicurezza aggiuntiva)."""
+    if not twap_progress:
+        return "📊 Nessuna esecuzione TWAP registrata finora."
 
-    keys = sorted(progress_keys) + extra_keys
-    if not keys:
-        return "📊 Nessun TWAP trovato (ne' esecuzioni registrate ne' record noti)."
-
-    blocks = ["📊 Stato TWAP:"]
-    for key in keys:
-        prog = twap_progress.get(key, {})
+    # coin -> side grezzo ("B"/"A") -> aggregato
+    per_coin = defaultdict(lambda: defaultdict(lambda: {
+        "executed_sz": 0.0, "notional": 0.0, "last_ms": None, "target_sz": 0.0, "has_target": False, "count": 0,
+    }))
+    for key, prog in twap_progress.items():
+        coin = prog.get("coin") or "?"
+        agg = per_coin[coin][prog.get("side") or ""]
+        agg["executed_sz"] += float(prog.get("executed_sz", 0.0) or 0.0)
+        agg["notional"] += float(prog.get("notional", 0.0) or 0.0)
+        if prog.get("last_ms"):
+            agg["last_ms"] = max(agg["last_ms"] or 0, prog["last_ms"])
+        agg["count"] += 1
         record = twap_records_by_id.get(key)
-        coin = prog.get("coin") or (record.get("coin") if record else None) or "?"
-        side_raw = prog.get("side") or ((record.get("side") if record else "") or "")
-        side = side_label(side_raw)
-
-        lines = [f"— TWAP {key}: {side} {coin}".rstrip()]
-
-        executed_sz = float(prog.get("executed_sz", 0.0) or 0.0)
-        notional = float(prog.get("notional", 0.0) or 0.0)
-        avg_px = (notional / executed_sz) if executed_sz else 0.0
-        if executed_sz:
-            lines.append(f"   Eseguito: {executed_sz:g} {coin} @ media {avg_px:g}")
-        else:
-            lines.append("   Eseguito: nessuna esecuzione registrata finora")
-
         if record and record.get("total_sz") is not None:
             try:
-                total_sz = float(record["total_sz"])
-                if total_sz > 0:
-                    pct = min(100.0, executed_sz / total_sz * 100)
-                    remaining = max(0.0, total_sz - executed_sz)
-                    lines.append(f"   Completamento: {pct:.1f}% (mancano circa {remaining:g} {coin})")
-            except (TypeError, ValueError, ZeroDivisionError):
+                agg["target_sz"] += float(record["total_sz"])
+                agg["has_target"] = True
+            except (TypeError, ValueError):
                 pass
 
-        if record and record.get("status"):
-            lines.append(f"   Stato: {record['status']}")
-
+    blocks = ["📊 Riepilogo TWAP per coin:"]
+    for coin in sorted(per_coin.keys()):
+        coin_lines = [f"— {coin}:"]
         current_mid = None
         if coin in mids:
             try:
                 current_mid = float(mids[coin])
             except (TypeError, ValueError):
                 current_mid = None
-        if current_mid is not None and avg_px:
-            diff = current_mid - avg_px
-            diff_pct = (diff / avg_px * 100) if avg_px else 0
-            segno = "+" if diff >= 0 else ""
-            lines.append(
-                f"   Prezzo attuale {coin}: {current_mid:g} (differenza vs media: {segno}{diff:g}, {segno}{diff_pct:.2f}%)"
+
+        for side_raw in sorted(per_coin[coin].keys()):
+            agg = per_coin[coin][side_raw]
+            executed_sz = agg["executed_sz"]
+            avg_px = (agg["notional"] / executed_sz) if executed_sz else 0.0
+            plurale = "e" if agg["count"] == 1 else "i"
+            coin_lines.append(
+                f"   {side_label(side_raw)}: {executed_sz:g} @ media {avg_px:g} ({agg['count']} ordin{plurale})"
             )
+            if agg["has_target"] and agg["target_sz"] > 0:
+                pct = min(100.0, executed_sz / agg["target_sz"] * 100)
+                remaining = max(0.0, agg["target_sz"] - executed_sz)
+                coin_lines.append(f"      Completamento: {pct:.1f}% (mancano circa {remaining:g} {coin})")
+            if current_mid is not None and avg_px:
+                diff = current_mid - avg_px
+                diff_pct = (diff / avg_px * 100) if avg_px else 0
+                segno = "+" if diff >= 0 else ""
+                coin_lines.append(
+                    f"      vs prezzo attuale ({current_mid:g}): {segno}{diff:g} ({segno}{diff_pct:.2f}%)"
+                )
+            if agg["last_ms"]:
+                coin_lines.append(f"      Ultima esecuzione: {fmt_ts(agg['last_ms'])}")
 
-        if prog.get("last_ms"):
-            lines.append(f"   Ultima esecuzione: {fmt_ts(prog['last_ms'])}")
-
-        blocks.append("\n".join(lines))
-
-    if omitted_count:
-        blocks.append(f"… e altri {omitted_count} TWAP piu' vecchi omessi (nessuna esecuzione registrata per questi).")
+        blocks.append("\n".join(coin_lines))
 
     return "\n\n".join(blocks)
 
@@ -909,6 +930,9 @@ def main() -> int:
 
     state_file = os.environ.get("STATE_FILE", DEFAULT_STATE_FILE)
     lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES))
+    alert_repeat_every_n_runs = max(
+        1, int(os.environ.get("ALERT_REPEAT_EVERY_N_RUNS", DEFAULT_ALERT_REPEAT_EVERY_N_RUNS))
+    )
 
     now_ms = int(time.time() * 1000)
     state = load_state(state_file)
@@ -997,7 +1021,10 @@ def main() -> int:
         next_alert_id += 1
         verso = "scende sotto" if direction == "below" else "sale sopra"
         extra = f" ({pct:g}% dal prezzo di {ref_price:g})" if pct is not None else ""
-        return f"🔔 Alert impostato: ti avviso quando {coin} {verso} {price:g}{extra} (id {alert['id']})."
+        confirmation = f"🔔 Alert impostato: ti avviso quando {coin} {verso} {price:g}{extra} (id {alert['id']})."
+        # L'utente vuole rivedere subito l'elenco aggiornato ogni volta che
+        # un alert viene aggiunto o modificato, non solo con /alerts.
+        return f"{confirmation}\n\n{format_alerts_list_message(price_alerts)}"
 
     # Un'unica chiamata di rete (best-effort) usata sia per rilevare TWAP
     # appena avviati sia, piu' sotto, come sorgente per la % di
@@ -1129,10 +1156,22 @@ def main() -> int:
     def make_alert_mark_active_cb(alert):
         def cb():
             alert["triggered"] = True
+            alert["runs_since_notify"] = 0
         return cb
 
-    def noop_cb():
-        pass
+    def make_alert_rearm_cb(alert):
+        def cb():
+            # Il prezzo e' rientrato oltre la soglia: l'alert NON viene
+            # rimosso, torna solo "in ascolto" (triggered=False) cosi' puo'
+            # scattare di nuovo se la soglia viene superata un'altra volta.
+            alert["triggered"] = False
+            alert["runs_since_notify"] = 0
+        return cb
+
+    def make_alert_reset_counter_cb(alert):
+        def cb():
+            alert["runs_since_notify"] = 0
+        return cb
 
     # --- Alert di prezzo: confronto col prezzo attuale (allMids, una sola
     # chiamata per tutti gli alert) solo se ce n'e' almeno uno attivo.
@@ -1142,10 +1181,17 @@ def main() -> int:
     #   (triggered=True) e NON viene rimosso -- restera' attivo finche' la
     #   condizione persiste E la posizione resta aperta. Senza posizione,
     #   si comporta come prima: notifica una volta e viene rimosso.
-    # - Alert gia' "attivo": ripete la notifica ad ogni controllo finche'
-    #   la condizione resta vera E la posizione resta aperta; si ferma (con
-    #   un messaggio dedicato) alla prima delle due condizioni che viene
-    #   meno -- prezzo rientrato oltre la soglia, o posizione chiusa.
+    # - Alert gia' "attivo": ripete la notifica ogni ALERT_REPEAT_EVERY_N_RUNS
+    #   giri (di default 5) finche' la condizione resta vera E la posizione
+    #   resta aperta -- non ad ogni singolo giro, per non intasare la chat;
+    #   il conteggio (runs_since_notify) viene azzerato appena viene inviato
+    #   un promemoria, e anche quando l'alert scatta la prima volta o rientra.
+    #   - Se il prezzo rientra oltre la soglia: notifica "allarme
+    #     rientrato" e l'alert torna "in ascolto" (NON viene rimosso), cosi'
+    #     puo' scattare di nuovo in futuro senza doverlo reimpostare.
+    #   - Se invece e' la posizione a chiudersi: notifica "alert
+    #     disattivato" e stavolta l'alert viene rimosso davvero (non c'e'
+    #     piu' nulla da proteggere).
     # Le mutazioni avvengono solo via on_success, cosi' un invio fallito
     # viene ritentato al giro successivo (stessa logica del resto). ---
     if price_alerts:
@@ -1180,16 +1226,30 @@ def main() -> int:
                     outgoing.append(
                         {
                             "text": format_alert_cleared_message(alert, current_price, "recovered"),
-                            "on_success": make_alert_remove_cb(alert.get("id")),
+                            "on_success": make_alert_rearm_cb(alert),
                         }
                     )
                 else:
-                    outgoing.append(
-                        {
-                            "text": format_alert_triggered_message(alert, current_price, position, repeated=True),
-                            "on_success": noop_cb,
-                        }
-                    )
+                    runs_since_notify = alert.get("runs_since_notify", 0) + 1
+                    if runs_since_notify >= alert_repeat_every_n_runs:
+                        outgoing.append(
+                            {
+                                "text": format_alert_triggered_message(
+                                    alert,
+                                    current_price,
+                                    position,
+                                    repeated=True,
+                                    repeat_every_n_runs=alert_repeat_every_n_runs,
+                                ),
+                                "on_success": make_alert_reset_counter_cb(alert),
+                            }
+                        )
+                    else:
+                        # Non ancora il momento di ripetere l'avviso: si
+                        # aggiorna solo il contatore (nessun invio Telegram,
+                        # quindi la mutazione e' sicura anche fuori da
+                        # on_success -- non c'e' nulla da ritentare).
+                        alert["runs_since_notify"] = runs_since_notify
             elif condition_met:
                 position = next(
                     (p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None
@@ -1297,11 +1357,12 @@ def main() -> int:
                         else:
                             before = len(price_alerts)
                             price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
-                            reply_text = (
-                                f"🗑️ Alert {alert_id} rimosso."
-                                if len(price_alerts) < before
-                                else f"⚠️ Nessun alert trovato con id {alert_id}."
-                            )
+                            if len(price_alerts) < before:
+                                reply_text = (
+                                    f"🗑️ Alert {alert_id} rimosso.\n\n{format_alerts_list_message(price_alerts)}"
+                                )
+                            else:
+                                reply_text = f"⚠️ Nessun alert trovato con id {alert_id}."
                     elif command == "start":
                         # Solo per mostrare/ripristinare la tastiera con i
                         # pulsanti su una chat senza ancora nessun messaggio.
