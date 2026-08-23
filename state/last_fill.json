@@ -328,11 +328,9 @@
     "2133671",
     "2133792"
   ],
-  "last_time_ms": 1787482570031,
+  "last_time_ms": 1787483047132,
   "next_recap_due_ms": 1787485235474,
   "seen_tids": [
-    15499929803210,
-    731347910481168,
     47231410492894,
     627924324304354,
     252814337699299,
@@ -830,7 +828,9 @@
     971896032978939,
     1048716289791996,
     1083293215479797,
-    897263439448063
+    897263439448063,
+    572064224828508,
+    215354352188997
   ],
   "twap_progress": {
     "2115076": {
@@ -945,13 +945,13 @@
     },
     "2131512": {
       "coin": "PURR",
-      "executed_sz": 11798.0,
-      "last_ms": 1787482090053,
-      "notional": 1136.3137759999997,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 11911.0,
+      "last_ms": 1787482930011,
+      "notional": 1148.0510859999997,
+      "pending_count": 1,
+      "pending_notional": 11.73731,
+      "pending_sz": 113.0,
+      "period_start_ms": 1787482930011,
       "side": "B"
     },
     "2131854": {
@@ -978,12 +978,12 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 165644.0,
-      "last_ms": 1787482417004,
-      "notional": 827.5593180000002,
-      "pending_count": 1,
-      "pending_notional": 11.65708,
-      "pending_sz": 2260.0,
+      "executed_sz": 167902.0,
+      "last_ms": 1787483047132,
+      "notional": 839.2128560000002,
+      "pending_count": 2,
+      "pending_notional": 23.310617999999998,
+      "pending_sz": 4518.0,
       "period_start_ms": 1787482417004,
       "side": "B"
     },
