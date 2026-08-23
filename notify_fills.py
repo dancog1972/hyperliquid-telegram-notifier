@@ -1,4 +1,4 @@
-##!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Hyperliquid -> Telegram fill notifier.
 
@@ -16,18 +16,65 @@ esecuzioni trovate:
   controllo se c'e' qualcosa di nuovo, con l'eseguito TOTALE dell'ordine
   (media prezzo, size totale) e il dettaglio delle singole esecuzioni sotto
   se sono state piu' di una nello stesso giro di controllo.
-- Slice di ordini TWAP gia' avviati: NESSuna notifica ad ogni slice
-  (sarebbero troppe). Le slice vengono accumulate silenziosamente, e una
-  volta ogni TWAP_RECAP_MINUTES (default 60) viene mandato un unico
-  messaggio di recap (📊) per ciascun TWAP attivo con esecuzioni in quel
-  periodo: quante slice, size totale ed eseguito cumulato del TWAP,
-  differenza rispetto al prezzo di mercato attuale. La percentuale di
-  completamento rispetto alla size totale del TWAP viene mostrata solo se
-  disponibile; altrimenti quella riga viene omessa (mai mostrato un numero
-  indovinato).
+- Slice di ordini TWAP gia' avviati: NESSUNA notifica automatica ad ogni
+  slice (sarebbero troppe, e cosi' anche i recap periodici che c'erano in
+  precedenza). L'eseguito cumulato viene solo accumulato silenziosamente in
+  stato; per vederlo si usa il comando Telegram /twap (vedi sotto).
+
+Comandi Telegram (a richiesta, nessun invio automatico):
+  /twap                        Stato di tutti i TWAP con esecuzioni
+                                registrate o record noti: eseguito
+                                cumulato, % di completamento se
+                                disponibile, differenza rispetto al
+                                prezzo di mercato attuale.
+  /positions                   Posizioni perps aperte: size e direzione,
+                                entry vs prezzo attuale, PnL non
+                                realizzato, prezzo di liquidazione ed
+                                eventuali ordini di stop/take-profit
+                                collegati.
+  /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
+                                Imposta un alert di prezzo per QUALSIASI
+                                coin quotata su Hyperliquid (non solo
+                                quelle con una posizione aperta). VALORE
+                                puo' essere un prezzo assoluto ("/alert
+                                BTC sotto 65000") oppure una percentuale
+                                ("/alert BTC sotto 5%"), calcolata rispetto
+                                al prezzo di mercato attuale nel momento in
+                                cui l'alert viene creato (accetta anche
+                                "<"/">" al posto di sotto/sopra).
+  /newalert                     Crea un alert in modo guidato: il bot manda
+                                un messaggio-prompt (con "Rispondi"/"Reply"
+                                gia' pronto su Telegram) e basta scrivere
+                                "<COIN> <sopra|sotto> <VALORE|VALORE%>" in
+                                risposta, senza dover ricordare /alert.
+  /alerts                       Elenca gli alert di prezzo attivi.
+  /delalert <id>                Rimuove un alert (l'id si vede con /alerts).
+I comandi vengono letti tramite polling (Telegram getUpdates) alla stessa
+frequenza con cui gira lo script: la risposta arriva quindi al PROSSIMO
+controllo programmato, non istantaneamente (fino a qualche minuto di
+attesa, a seconda di quanto spesso e' schedulato il workflow) -- con
+/newalert questo vale per OGNI passaggio (prompt e poi risposta), quindi
+con un intervallo lungo puo' richiedere un paio di giri. Per sicurezza
+vengono processati solo i messaggi che arrivano dalla chat configurata in
+TELEGRAM_CHAT_ID: comandi da altre chat vengono ignorati.
+
+Alert di prezzo (🔔): ad ogni controllo, se ci sono alert attivi, il
+prezzo attuale (allMids) viene confrontato con la soglia impostata. Se
+scattato, arriva una notifica automatica e l'alert viene rimosso (va
+reimpostato con /alert se lo si vuole di nuovo attivo) -- niente
+notifiche ripetute per lo stesso alert.
+
+Ogni messaggio del bot porta anche una tastiera Telegram persistente
+("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
+comuni si possono richiamare con un tocco invece di scriverli a mano;
+scrivere "/start" al bot manda un messaggio di benvenuto che la mostra
+anche a chat vuota.
 
 Ogni messaggio Telegram e' preceduto da una riga separatrice, per restare
-visivamente distinto anche quando le notifiche arrivano ravvicinate.
+visivamente distinto anche quando le notifiche arrivano ravvicinate. Ogni
+giro di controllo in cui c'e' almeno una notifica automatica da mandare e'
+preceduto da un'unica intestazione "nuovo aggiornamento" ben visibile
+(nessuna intestazione se non c'e' nulla di nuovo).
 
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
 schedulato / trigger esterno), non come processo always-on.
@@ -43,8 +90,6 @@ Variabili opzionali:
                          quanti minuti indietro guardare (default: 15).
                          Evita di notificare tutta la storia del wallet al
                          primo run.
-  TWAP_RECAP_MINUTES     Ogni quanti minuti mandare il recap accumulato
-                         delle slice TWAP (default: 60).
 """
 
 import json
@@ -58,6 +103,7 @@ from datetime import datetime
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_GETUPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 
 DEFAULT_STATE_FILE = "state/last_fill.json"
 DEFAULT_LOOKBACK_MINUTES = 15
@@ -79,11 +125,40 @@ ITALIAN_MONTHS = [
 # percentuale di completamento viene semplicemente omessa dai messaggi.
 TWAP_STATE_TYPE_CANDIDATES = ["userTwapHistory", "twapHistory"]
 
-DEFAULT_TWAP_RECAP_MINUTES = 60
-
 # Riga divisoria messa in cima ad ogni messaggio Telegram, cosi' notifiche
 # ravvicinate restano visivamente distinte invece di confondersi.
 MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖"
+
+# Tastiera persistente con i due comandi, allegata di default ad ogni
+# messaggio mandato dal bot: al tocco Telegram invia il testo del pulsante
+# come un normale messaggio, che viene interpretato allo stesso modo di un
+# comando digitato a mano (nessuna logica separata da gestire).
+COMMAND_KEYBOARD = {
+    "keyboard": [["/twap", "/positions"], ["/alerts", "/newalert"]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+# Direzioni accettate nel comando /alert, in italiano e come simboli.
+ALERT_DIRECTION_ALIASES = {
+    "sotto": "below", "under": "below", "below": "below", "<": "below",
+    "sopra": "above", "over": "above", "above": "above", ">": "above",
+}
+
+# Testo (unico, riconoscibile) usato nel messaggio-prompt mandato dal
+# pulsante "/newalert": quando arriva una risposta (reply) a un messaggio
+# che lo contiene, main() sa che va interpretata come "<coin> <direzione>
+# <valore>" invece che come comando.
+ALERT_PROMPT_MARKER = "✏️ Nuovo alert"
+
+# Forza la comparsa della tastiera di risposta rapida di Telegram (con un
+# suggerimento di formato), al posto della tastiera fissa COMMAND_KEYBOARD,
+# solo per il messaggio-prompt di /newalert.
+ALERT_PROMPT_REPLY_MARKUP = {
+    "force_reply": True,
+    "input_field_placeholder": "es. BTC sotto 65000",
+    "selective": True,
+}
 
 # Barra piu' vistosa (Telegram non supporta colori nel testo dei messaggi
 # dei bot, quindi si usa un emoji a blocco colorato ben visibile) usata solo
@@ -177,8 +252,9 @@ def fetch_twap_records(wallet: str) -> list:
     candidati e si scartano silenziosamente i campi che non si riescono a
     interpretare con sicurezza (mai un dato indovinato). Ritorna [] se
     nessun candidato risponde in modo utilizzabile -- in tal caso sia il
-    rilevamento "nuovo TWAP" sia la % di completamento nei recap vengono
-    semplicemente omessi, senza far fallire il resto della notifica."""
+    rilevamento "nuovo TWAP" sia la % di completamento nei messaggi di stato
+    vengono semplicemente omessi, senza far fallire il resto della
+    notifica."""
     for type_name in TWAP_STATE_TYPE_CANDIDATES:
         try:
             result = http_post_json(HL_INFO_URL, {"type": type_name, "user": wallet})
@@ -216,6 +292,177 @@ def fetch_twap_records(wallet: str) -> list:
         if parsed:
             return parsed
     return []
+
+
+def fetch_clearinghouse_state(wallet: str) -> dict:
+    """Stato del conto perps: posizioni aperte, margine, ecc. Best-effort:
+    in caso di errore ritorna un dizionario vuoto (il comando /positions
+    lo segnala invece di mostrare dati inventati)."""
+    try:
+        result = http_post_json(HL_INFO_URL, {"type": "clearinghouseState", "user": wallet})
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare le posizioni (clearinghouseState): {e}", file=sys.stderr)
+    return {}
+
+
+def fetch_open_orders(wallet: str) -> list:
+    """Ordini aperti (incluso stop-loss/take-profit con trigger). Best-effort:
+    in caso di errore ritorna una lista vuota."""
+    try:
+        result = http_post_json(HL_INFO_URL, {"type": "frontendOpenOrders", "user": wallet})
+        if isinstance(result, list):
+            return result
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare gli ordini aperti (frontendOpenOrders): {e}", file=sys.stderr)
+    return []
+
+
+def fetch_telegram_updates(bot_token: str, offset: int) -> list:
+    """Legge i messaggi in arrivo al bot (polling, non webhook) a partire da
+    `offset` (update_id gia' processati + 1), cosi' Telegram non li
+    ri-manda ai giri successivi. Best-effort: in caso di errore ritorna una
+    lista vuota, i comandi verranno ripescati al prossimo giro."""
+    url = TELEGRAM_GETUPDATES_URL.format(token=bot_token)
+    payload = {"offset": offset, "timeout": 0, "allowed_updates": ["message"]}
+    try:
+        result = http_post_json(url, payload)
+    except Exception as e:
+        print(f"AVVISO: impossibile leggere i comandi Telegram: {e}", file=sys.stderr)
+        return []
+    if not isinstance(result, dict) or not result.get("ok"):
+        return []
+    updates = result.get("result")
+    return updates if isinstance(updates, list) else []
+
+
+def normalize_command(text) -> str:
+    """Normalizza il testo di un messaggio Telegram al nome del comando
+    (senza "/" iniziale, senza eventuale "@nomebot", minuscolo). Ritorna ""
+    se il testo non e' un comando."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    first_token = text.strip().split()[0]
+    if not first_token.startswith("/"):
+        return ""
+    first_token = first_token[1:].split("@", 1)[0]
+    return first_token.lower()
+
+
+def command_args(text) -> str:
+    """Ritorna il testo di un messaggio Telegram meno il primo token (il
+    comando stesso), es. "/alert BTC sotto 65000" -> "BTC sotto 65000"."""
+    if not isinstance(text, str):
+        return ""
+    parts = text.strip().split(maxsplit=1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+def parse_price_alert_command(args_text: str):
+    """Interpreta gli argomenti del comando /alert (es. "BTC sotto 65000",
+    "ETH > 4000" o "BTC sotto 5%") e ritorna (coin, direction, value,
+    is_percent) con direction gia' normalizzata a "below"/"above". Se
+    is_percent e' True, value e' una percentuale (da interpretare rispetto
+    all'entry price di una posizione aperta -- vedi main()), altrimenti e'
+    un prezzo assoluto. Solleva ValueError con un messaggio gia' pronto da
+    rimandare all'utente se il formato non e' valido -- mai un valore
+    indovinato in caso di dubbio."""
+    parts = args_text.split()
+    if len(parts) < 3:
+        raise ValueError(
+            "Formato non valido. Usa: /alert <COIN> <sopra|sotto> <VALORE>\n"
+            "VALORE puo' essere un prezzo assoluto o una percentuale (con %) "
+            "rispetto all'entry di una tua posizione aperta su quella coin.\n"
+            "Esempi: /alert BTC sotto 65000  —  /alert ETH > 4000  —  /alert BTC sotto 5%"
+        )
+    coin = parts[0].upper()
+    direction = ALERT_DIRECTION_ALIASES.get(parts[1].lower())
+    if direction is None:
+        raise ValueError(f"Direzione '{parts[1]}' non riconosciuta. Usa 'sopra'/'sotto' oppure '>'/'<'.")
+    value_raw = parts[2]
+    is_percent = value_raw.endswith("%")
+    number_part = value_raw[:-1] if is_percent else value_raw
+    try:
+        value = float(number_part.replace(",", "."))
+    except ValueError:
+        raise ValueError(f"Valore '{value_raw}' non valido.")
+    if value <= 0:
+        raise ValueError("Il valore deve essere maggiore di zero.")
+    return coin, direction, value, is_percent
+
+
+def extract_open_positions(clearinghouse_state: dict) -> list:
+    """Ritorna la lista di posizioni aperte (size != 0) da clearinghouseState,
+    con parsing difensivo per gestire sia il caso in cui i campi della
+    posizione siano annidati sotto "position" sia il caso in cui siano
+    diretti (schema non verificabile con certezza -- vedi
+    format_positions_message). Usata sia dal comando /positions sia per
+    calcolare l'entry price quando si imposta un alert in percentuale."""
+    asset_positions = clearinghouse_state.get("assetPositions") if isinstance(clearinghouse_state, dict) else None
+    if not isinstance(asset_positions, list):
+        return []
+    positions = []
+    for item in asset_positions:
+        if not isinstance(item, dict):
+            continue
+        pos = item.get("position") if isinstance(item.get("position"), dict) else item
+        if not isinstance(pos, dict):
+            continue
+        try:
+            szi = float(pos.get("szi", 0))
+        except (TypeError, ValueError):
+            szi = 0.0
+        if szi == 0:
+            continue
+        positions.append(pos)
+    return positions
+
+
+def format_alerts_list_message(alerts: list) -> str:
+    """Risposta al comando /alerts: elenco degli alert di prezzo attivi."""
+    if not alerts:
+        return (
+            "🔔 Nessun alert di prezzo impostato.\n"
+            "Per crearne uno: /alert <COIN> <sopra|sotto> <VALORE|VALORE%>\n"
+            "Esempi: /alert BTC sotto 65000  —  /alert BTC sotto 5%"
+        )
+    lines = ["🔔 Alert di prezzo attivi:"]
+    for a in sorted(alerts, key=lambda x: x.get("id", 0)):
+        verso = "sotto" if a.get("direction") == "below" else "sopra"
+        try:
+            price_txt = f"{float(a.get('price', 0)):g}"
+        except (TypeError, ValueError):
+            price_txt = str(a.get("price"))
+        pct_txt = ""
+        if a.get("pct") is not None:
+            try:
+                pct_txt = f" ({float(a['pct']):g}% dal prezzo di {float(a.get('ref_price', 0)):g})"
+            except (TypeError, ValueError):
+                pct_txt = f" ({a['pct']}%)"
+        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}")
+    lines.append("\nPer rimuoverne uno: /delalert <id>")
+    return "\n".join(lines)
+
+
+def format_alert_triggered_message(alert: dict, current_price: float) -> str:
+    """Notifica automatica mandata quando un alert di prezzo scatta.
+    L'alert viene rimosso dopo l'invio (vedi main()): niente notifiche
+    ripetute per la stessa soglia."""
+    coin = alert.get("coin", "?")
+    threshold = alert.get("price", 0)
+    verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
+    extra = ""
+    if alert.get("pct") is not None:
+        try:
+            extra = f" ({float(alert['pct']):g}% dal prezzo di {float(alert.get('ref_price', 0)):g})"
+        except (TypeError, ValueError):
+            extra = f" ({alert['pct']}%)"
+    return (
+        f"🔔 Alert scattato: {coin} {verso} {threshold:g}{extra}\n"
+        f"Prezzo attuale: {current_price:g}\n"
+        f"(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)"
+    )
 
 
 def load_state(path: str) -> dict:
@@ -284,58 +531,12 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_twap_recap_message(twap_id, prog: dict, current_mid: float | None, target: dict | None) -> str:
-    """Recap periodico (non per-slice) di un TWAP: quanto eseguito nel
-    periodo appena chiuso, quanto eseguito in totale sul TWAP, differenza
-    col prezzo di mercato attuale ed eventuale % di completamento."""
-    coin = prog.get("coin", "?")
-    side = side_label(prog.get("side", ""))
-
-    pending_sz = prog.get("pending_sz", 0.0)
-    pending_count = prog.get("pending_count", 0)
-    pending_avg = (prog.get("pending_notional", 0.0) / pending_sz) if pending_sz else 0.0
-
-    cum_executed_sz = prog.get("executed_sz", 0.0)
-    cum_avg_px = (prog.get("notional", 0.0) / cum_executed_sz) if cum_executed_sz else 0.0
-
-    period_start = prog.get("period_start_ms")
-    period_end = prog.get("last_ms")
-
-    plurale = "e" if pending_count == 1 else "i"
-    lines = [
-        f"📊 Recap TWAP {coin} (id {twap_id})",
-        f"{pending_count} esecuzion{plurale} in questo periodo: {side} {pending_sz:g} {coin} @ media {pending_avg:g}",
-        f"Eseguito totale sul TWAP finora: {cum_executed_sz:g} {coin} @ media {cum_avg_px:g}",
-    ]
-
-    if target and target.get("total_sz"):
-        try:
-            total_sz = float(target["total_sz"])
-            if total_sz > 0:
-                pct = min(100.0, cum_executed_sz / total_sz * 100)
-                remaining = max(0.0, total_sz - cum_executed_sz)
-                lines.append(f"Completamento TWAP: {pct:.1f}% (mancano circa {remaining:g} {coin})")
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-
-    if current_mid is not None and cum_avg_px:
-        diff = current_mid - cum_avg_px
-        diff_pct = (diff / cum_avg_px * 100) if cum_avg_px else 0
-        segno = "+" if diff >= 0 else ""
-        lines.append(
-            f"Prezzo attuale {coin}: {current_mid:g} (differenza vs media: {segno}{diff:g}, {segno}{diff_pct:.2f}%)"
-        )
-
-    if period_start:
-        lines.append(f"Periodo: {fmt_ts(period_start)} → {fmt_ts(period_end)}")
-    return "\n".join(lines)
-
-
 def format_update_header(now_ms: int) -> str:
     """Intestazione mandata una sola volta all'inizio di ogni giro in cui
-    c'e' almeno un messaggio da inviare, per separare visivamente un
-    controllo dall'altro. Mostrata nel fuso orario DISPLAY_TIMEZONE quando
-    disponibile, altrimenti in UTC (mai un crash per questo)."""
+    c'e' almeno un messaggio automatico da inviare, per separare
+    visivamente un controllo dall'altro. Mostrata nel fuso orario
+    DISPLAY_TIMEZONE quando disponibile, altrimenti in UTC (mai un crash
+    per questo)."""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
@@ -376,17 +577,204 @@ def format_new_twap_message(record: dict) -> str:
     return "\n".join(lines)
 
 
+def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mids: dict) -> str:
+    """Risposta al comando /twap: stato di ogni TWAP di cui abbiamo
+    esecuzioni accumulate e/o un record noto (attivo o meno), con eseguito
+    cumulato, % di completamento se disponibile e differenza rispetto al
+    prezzo di mercato attuale."""
+    keys = sorted(set(twap_progress.keys()) | set(twap_records_by_id.keys()))
+    if not keys:
+        return "📊 Nessun TWAP trovato (ne' esecuzioni registrate ne' record noti)."
+
+    blocks = ["📊 Stato TWAP:"]
+    for key in keys:
+        prog = twap_progress.get(key, {})
+        record = twap_records_by_id.get(key)
+        coin = prog.get("coin") or (record.get("coin") if record else None) or "?"
+        side_raw = prog.get("side") or ((record.get("side") if record else "") or "")
+        side = side_label(side_raw)
+
+        lines = [f"— TWAP {key}: {side} {coin}".rstrip()]
+
+        executed_sz = float(prog.get("executed_sz", 0.0) or 0.0)
+        notional = float(prog.get("notional", 0.0) or 0.0)
+        avg_px = (notional / executed_sz) if executed_sz else 0.0
+        if executed_sz:
+            lines.append(f"   Eseguito: {executed_sz:g} {coin} @ media {avg_px:g}")
+        else:
+            lines.append("   Eseguito: nessuna esecuzione registrata finora")
+
+        if record and record.get("total_sz") is not None:
+            try:
+                total_sz = float(record["total_sz"])
+                if total_sz > 0:
+                    pct = min(100.0, executed_sz / total_sz * 100)
+                    remaining = max(0.0, total_sz - executed_sz)
+                    lines.append(f"   Completamento: {pct:.1f}% (mancano circa {remaining:g} {coin})")
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        if record and record.get("status"):
+            lines.append(f"   Stato: {record['status']}")
+
+        current_mid = None
+        if coin in mids:
+            try:
+                current_mid = float(mids[coin])
+            except (TypeError, ValueError):
+                current_mid = None
+        if current_mid is not None and avg_px:
+            diff = current_mid - avg_px
+            diff_pct = (diff / avg_px * 100) if avg_px else 0
+            segno = "+" if diff >= 0 else ""
+            lines.append(
+                f"   Prezzo attuale {coin}: {current_mid:g} (differenza vs media: {segno}{diff:g}, {segno}{diff_pct:.2f}%)"
+            )
+
+        if prog.get("last_ms"):
+            lines.append(f"   Ultima esecuzione: {fmt_ts(prog['last_ms'])}")
+
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks)
+
+
+def format_positions_message(clearinghouse_state: dict, open_orders: list, mids: dict) -> str:
+    """Risposta al comando /positions: posizioni perps aperte con entry vs
+    prezzo attuale, PnL, prezzo di liquidazione ed eventuali stop/TP
+    collegati (dedotti dagli ordini aperti reduce-only con trigger).
+
+    Lo schema esatto di clearinghouseState/frontendOpenOrders non e'
+    verificabile da qui (nessun accesso di rete nel sandbox di sviluppo),
+    quindi il parsing e' difensivo: gestisce sia il caso in cui i campi
+    della posizione siano annidati sotto "position" sia il caso in cui
+    siano diretti, e omette in silenzio quello che non riesce a
+    interpretare con sicurezza invece di mostrare dati indovinati."""
+    if not isinstance(clearinghouse_state, dict) or not isinstance(clearinghouse_state.get("assetPositions"), list):
+        return "📋 Nessuna posizione trovata (o dati non disponibili al momento)."
+
+    positions = extract_open_positions(clearinghouse_state)
+    if not positions:
+        return "📋 Nessuna posizione aperta al momento."
+
+    orders_by_coin = defaultdict(list)
+    for o in open_orders:
+        if not isinstance(o, dict):
+            continue
+        coin = o.get("coin")
+        if coin:
+            orders_by_coin[coin].append(o)
+
+    blocks = ["📋 Posizioni aperte:"]
+    for pos in positions:
+        coin = pos.get("coin", "?")
+        try:
+            szi = float(pos.get("szi", 0))
+        except (TypeError, ValueError):
+            szi = 0.0
+        direction = "LONG" if szi > 0 else "SHORT"
+        abs_sz = abs(szi)
+
+        leverage = pos.get("leverage")
+        lev_value = leverage.get("value") if isinstance(leverage, dict) else leverage
+
+        header = f"— {coin}: {direction} {abs_sz:g}"
+        if lev_value:
+            header += f" ({lev_value}x)"
+        lines = [header]
+
+        try:
+            entry_px = float(pos.get("entryPx")) if pos.get("entryPx") is not None else None
+        except (TypeError, ValueError):
+            entry_px = None
+
+        current_mid = None
+        if coin in mids:
+            try:
+                current_mid = float(mids[coin])
+            except (TypeError, ValueError):
+                current_mid = None
+
+        if entry_px is not None:
+            lines.append(f"   Entry: {entry_px:g}")
+            if current_mid is not None and entry_px:
+                diff_pct = (current_mid - entry_px) / entry_px * 100
+                if szi < 0:  # short: si guadagna quando il prezzo scende
+                    diff_pct = -diff_pct
+                segno = "+" if diff_pct >= 0 else ""
+                lines.append(f"   Attuale: {current_mid:g} ({segno}{diff_pct:.2f}% vs entry)")
+        elif current_mid is not None:
+            lines.append(f"   Attuale: {current_mid:g}")
+
+        try:
+            unrealized_pnl = float(pos.get("unrealizedPnl")) if pos.get("unrealizedPnl") is not None else None
+        except (TypeError, ValueError):
+            unrealized_pnl = None
+        if unrealized_pnl is not None:
+            segno = "+" if unrealized_pnl >= 0 else ""
+            roe_txt = ""
+            roe = pos.get("returnOnEquity")
+            if roe is not None:
+                try:
+                    roe_txt = f" ({segno}{float(roe) * 100:.2f}%)"
+                except (TypeError, ValueError):
+                    roe_txt = ""
+            lines.append(f"   PnL non realizzato: {segno}{unrealized_pnl:g} USDC{roe_txt}")
+
+        liq_px = pos.get("liquidationPx")
+        if liq_px is not None:
+            try:
+                lines.append(f"   Prezzo di liquidazione: {float(liq_px):g}")
+            except (TypeError, ValueError):
+                pass
+
+        stop_lines = []
+        for o in orders_by_coin.get(coin, []):
+            is_reduce_only = bool(o.get("reduceOnly"))
+            has_trigger = bool(o.get("isTrigger")) or bool(o.get("isPositionTpsl")) or o.get("triggerPx") not in (None, "", "0")
+            if not (is_reduce_only and has_trigger):
+                continue
+            trigger_px = o.get("triggerPx")
+            order_type = o.get("orderType", "?")
+            sz = o.get("sz", "?")
+            try:
+                stop_lines.append(f"   Stop/TP: {order_type} trigger @ {float(trigger_px):g} (size {sz})")
+            except (TypeError, ValueError):
+                stop_lines.append(f"   Stop/TP: {order_type} (size {sz})")
+
+        if stop_lines:
+            lines.extend(stop_lines)
+        else:
+            lines.append("   ⚠️ Nessuno stop/TP trovato per questa posizione")
+
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks)
+
+
 def send_telegram_message(
-    bot_token: str, chat_id: str, text: str, dry_run: bool = False, separator: str = MESSAGE_SEPARATOR
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    dry_run: bool = False,
+    separator: str = MESSAGE_SEPARATOR,
+    reply_markup: dict | None = COMMAND_KEYBOARD,
 ) -> None:
+    """Manda un messaggio Telegram. Per default allega la tastiera con i
+    pulsanti /twap e /positions (vedi COMMAND_KEYBOARD) cosi' resta sempre
+    visibile; passare reply_markup=None per un messaggio senza tastiera."""
     full_text = f"{separator}\n{text}"
     if dry_run:
         print("--- [DRY RUN] messaggio che verrebbe inviato ---")
         print(full_text)
+        if reply_markup:
+            print(f"[tastiera: {reply_markup}]")
         print("-------------------------------------------------")
         return
     url = TELEGRAM_API_URL.format(token=bot_token)
     payload = {"chat_id": chat_id, "text": full_text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     http_post_json(url, payload)
 
 
@@ -403,7 +791,6 @@ def main() -> int:
 
     state_file = os.environ.get("STATE_FILE", DEFAULT_STATE_FILE)
     lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES))
-    recap_interval_ms = int(os.environ.get("TWAP_RECAP_MINUTES", DEFAULT_TWAP_RECAP_MINUTES)) * 60 * 1000
 
     now_ms = int(time.time() * 1000)
     state = load_state(state_file)
@@ -411,18 +798,86 @@ def main() -> int:
     last_time_ms = state.get("last_time_ms")
     seen_tids = set(state.get("seen_tids", []))
     # str(twap_id) -> {"executed_sz","notional" (cumulativi di tutta la vita
-    # del TWAP), "pending_sz","pending_notional","pending_count",
-    # "period_start_ms","last_ms" (accumulo del periodo di recap corrente,
-    # azzerato dopo ogni recap inviato con successo), "coin", "side"}.
+    # del TWAP), "last_ms", "coin", "side"}. Consultato a richiesta dal
+    # comando /twap (nessun invio automatico periodico).
     twap_progress = state.get("twap_progress", {})
     is_very_first_run = "known_twap_ids" not in state
     known_twap_ids_list = [str(x) for x in state.get("known_twap_ids", [])]
     known_twap_ids = set(known_twap_ids_list)
+    last_update_id = int(state.get("last_update_id", 0) or 0)
+    # Lista di alert di prezzo attivi: {"id","coin","direction" ("below"/
+    # "above"),"price","created_ms"}. Gestita a richiesta con /alert,
+    # /alerts, /delalert; controllata automaticamente ad ogni giro (vedi
+    # sotto) e rimossa (via on_success) non appena la notifica scatta.
+    price_alerts = state.get("price_alerts", [])
+    next_alert_id = int(state.get("next_alert_id", 1) or 1)
+
+    # Cache dei prezzi mid: recuperati dalla rete solo se effettivamente
+    # serve (un comando /twap o /positions, o un alert attivo), mai in
+    # anticipo.
+    mids_cache = None
+
+    def get_mids() -> dict:
+        nonlocal mids_cache
+        if mids_cache is None:
+            mids_cache = fetch_all_mids()
+        return mids_cache
+
+    # Cache dello stato posizioni (clearinghouseState): recuperato dalla
+    # rete solo se serve (comando /positions).
+    positions_state_cache = None
+
+    def get_positions_state() -> dict:
+        nonlocal positions_state_cache
+        if positions_state_cache is None:
+            positions_state_cache = fetch_clearinghouse_state(wallet)
+        return positions_state_cache
+
+    def try_create_alert(args_text: str) -> str:
+        """Interpreta args_text come "<COIN> <sopra|sotto> <VALORE|VALORE%>"
+        e, se valido, aggiunge l'alert a price_alerts. Funziona per QUALSIASI
+        coin con un prezzo su Hyperliquid (non solo quelle con una posizione
+        aperta): la percentuale e' calcolata rispetto al prezzo attuale
+        (allMids) nel momento in cui l'alert viene creato. Ritorna il testo
+        di conferma o dell'errore da rimandare all'utente."""
+        nonlocal next_alert_id
+        try:
+            coin, direction, value, is_percent = parse_price_alert_command(args_text)
+        except ValueError as e:
+            return f"⚠️ {e}"
+
+        mids_now = get_mids()
+        pct = None
+        ref_price = None
+        if is_percent:
+            base_raw = mids_now.get(coin)
+            if base_raw is None:
+                return f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid. Controlla il ticker."
+            try:
+                ref_price = float(base_raw)
+            except (TypeError, ValueError):
+                return f"⚠️ Prezzo attuale di {coin} non disponibile al momento, riprova più tardi."
+            pct = value
+            price = ref_price * (1 - value / 100) if direction == "below" else ref_price * (1 + value / 100)
+        else:
+            if mids_now and coin not in mids_now:
+                return f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid. Controlla il ticker."
+            price = value
+
+        alert = {"id": next_alert_id, "coin": coin, "direction": direction, "price": price, "created_ms": now_ms}
+        if pct is not None:
+            alert["pct"] = pct
+            alert["ref_price"] = ref_price
+        price_alerts.append(alert)
+        next_alert_id += 1
+        verso = "scende sotto" if direction == "below" else "sale sopra"
+        extra = f" ({pct:g}% dal prezzo di {ref_price:g})" if pct is not None else ""
+        return f"🔔 Alert impostato: ti avviso quando {coin} {verso} {price:g}{extra} (id {alert['id']})."
 
     # Un'unica chiamata di rete (best-effort) usata sia per rilevare TWAP
     # appena avviati sia, piu' sotto, come sorgente per la % di
-    # completamento nei recap -- evita di richiamare l'endpoint TWAP una
-    # volta per ogni TWAP attivo.
+    # completamento nei messaggi di stato -- evita di richiamare l'endpoint
+    # TWAP una volta per ogni TWAP attivo.
     try:
         twap_records = fetch_twap_records(wallet)
     except Exception as e:
@@ -430,13 +885,14 @@ def main() -> int:
         twap_records = []
     twap_records_by_id = {str(r["twap_id"]): r for r in twap_records}
 
-    # Coda di tutti i messaggi da mandare in questo giro: si costruisce
-    # prima di inviare qualunque cosa, cosi' possiamo far precedere tutto da
-    # un'unica intestazione "nuovo aggiornamento" e mandare i messaggi in
-    # ordine, invece di intestazioni ripetute sparse nel codice. Ogni
-    # elemento ha "text" e "on_success" (eseguito solo se l'invio va a buon
-    # fine, per mantenere la stessa logica di retry-al-prossimo-giro di
-    # prima in caso di errore Telegram).
+    # Coda di tutti i messaggi AUTOMATICI da mandare in questo giro (nuovi
+    # TWAP, ordini eseguiti): si costruisce prima di inviare qualunque cosa,
+    # cosi' possiamo far precedere tutto da un'unica intestazione "nuovo
+    # aggiornamento" e mandare i messaggi in ordine. Le risposte ai comandi
+    # Telegram NON passano da questa coda: sono risposte dirette, inviate
+    # subito, senza intestazione. Ogni elemento ha "text" e "on_success"
+    # (eseguito solo se l'invio va a buon fine, per mantenere la stessa
+    # logica di retry-al-prossimo-giro di prima in caso di errore Telegram).
     outgoing = []
 
     def make_new_twap_cb(tid_str):
@@ -503,99 +959,68 @@ def main() -> int:
         for oid, group in by_oid.items():
             outgoing.append({"text": format_order_message(group), "on_success": make_regular_cb(group)})
 
-    # --- Slice TWAP: accumulo silenzioso ad ogni controllo (nessun invio) ---
+    # --- Slice TWAP: accumulo silenzioso ad ogni controllo (nessun invio
+    # automatico -- lo stato cumulato si consulta a richiesta con /twap) ---
     if twap_new:
         by_twap = defaultdict(list)
         for f in twap_new:
             by_twap[f.get("twapId")].append(f)
         for twap_id, group in by_twap.items():
             key = str(twap_id)
-            prog = twap_progress.get(
-                key,
-                {
-                    "executed_sz": 0.0,
-                    "notional": 0.0,
-                    "pending_sz": 0.0,
-                    "pending_notional": 0.0,
-                    "pending_count": 0,
-                    "period_start_ms": None,
-                    "last_ms": None,
-                },
-            )
+            prog = twap_progress.get(key, {"executed_sz": 0.0, "notional": 0.0, "last_ms": None})
             for f in group:
                 sz = float(f.get("sz", 0))
                 px = float(f.get("px", 0))
                 prog["executed_sz"] = prog.get("executed_sz", 0.0) + sz
                 prog["notional"] = prog.get("notional", 0.0) + sz * px
-                prog["pending_sz"] = prog.get("pending_sz", 0.0) + sz
-                prog["pending_notional"] = prog.get("pending_notional", 0.0) + sz * px
-                prog["pending_count"] = prog.get("pending_count", 0) + 1
-                if prog.get("period_start_ms") is None:
-                    prog["period_start_ms"] = f.get("time")
                 prog["last_ms"] = f.get("time")
             prog["coin"] = group[0].get("coin", "?")
             prog["side"] = group[0].get("side", "")
             twap_progress[key] = prog
 
-            # Le slice TWAP sono "viste" (niente ri-conteggio al prossimo
-            # giro) anche se non mandiamo ancora nessun messaggio: sono gia'
-            # state incorporate nell'accumulo cumulativo.
             for f in group:
                 tid = f.get("tid")
                 if tid is not None:
                     latest_tids.append(tid)
                 max_time_seen = max(max_time_seen, f.get("time", max_time_seen))
 
-    # --- Recap TWAP: un unico orario "prossimo recap" condiviso da TUTTI i
-    # TWAP, cosi' arrivano tutti insieme nello stesso batch invece che ognuno
-    # secondo il proprio orologio individuale (che partirebbe in momenti
-    # diversi a seconda di quando si e' vista la prima slice di ciascuno). ---
-    next_recap_due_ms = state.get("next_recap_due_ms")
-    if next_recap_due_ms is None:
-        next_recap_due_ms = now_ms + recap_interval_ms
-
-    recap_due_now = now_ms >= next_recap_due_ms
-    while now_ms >= next_recap_due_ms:
-        next_recap_due_ms += recap_interval_ms  # riallinea senza "andare alla deriva" anche se un giro salta
-
-    due_recaps = (
-        [(key, prog) for key, prog in twap_progress.items() if prog.get("pending_count", 0) > 0]
-        if recap_due_now
-        else []
-    )
-
-    def make_recap_cb(key, prog):
+    def make_alert_fired_cb(alert_id):
         def cb():
-            # Azzera l'accumulo del periodo solo se l'invio e' andato a
-            # buon fine, altrimenti si riprova al giro successivo.
-            prog["pending_sz"] = 0.0
-            prog["pending_notional"] = 0.0
-            prog["pending_count"] = 0
-            prog["period_start_ms"] = None
-            twap_progress[key] = prog
+            price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
         return cb
 
-    if due_recaps:
-        mids = fetch_all_mids()
-        for key, prog in due_recaps:
-            coin = prog.get("coin", "?")
-            current_mid = None
-            if coin in mids:
-                try:
-                    current_mid = float(mids[coin])
-                except (TypeError, ValueError):
-                    current_mid = None
-            # Riusa i record TWAP gia' scaricati a inizio run (nessuna
-            # chiamata di rete aggiuntiva per ogni recap).
-            record = twap_records_by_id.get(key)
-            target = {"total_sz": record["total_sz"]} if record and record.get("total_sz") is not None else None
+    # --- Alert di prezzo: confronto col prezzo attuale (allMids, una sola
+    # chiamata per tutti gli alert) solo se ce n'e' almeno uno attivo. Alert
+    # scattato -> notifica automatica in coda, rimosso solo se l'invio va a
+    # buon fine (stessa logica di retry-al-prossimo-giro del resto). ---
+    if price_alerts:
+        mids_for_alerts = get_mids()
+        for alert in price_alerts:
+            coin = alert.get("coin")
+            price_raw = mids_for_alerts.get(coin)
+            if price_raw is None:
+                continue  # coin non presente in allMids: si riprova al prossimo giro
+            try:
+                current_price = float(price_raw)
+                threshold = float(alert.get("price"))
+            except (TypeError, ValueError):
+                continue
+            direction = alert.get("direction")
+            fired = (direction == "below" and current_price <= threshold) or (
+                direction == "above" and current_price >= threshold
+            )
+            if not fired:
+                continue
+            outgoing.append(
+                {
+                    "text": format_alert_triggered_message(alert, current_price),
+                    "on_success": make_alert_fired_cb(alert.get("id")),
+                }
+            )
 
-            text = format_twap_recap_message(key, prog, current_mid, target)
-            outgoing.append({"text": text, "on_success": make_recap_cb(key, prog)})
-
-    # --- Invio effettivo: intestazione di aggiornamento (solo se c'e'
-    # davvero qualcosa da mandare in questo giro) seguita da tutti i
-    # messaggi accodati, in ordine. ---
+    # --- Invio delle notifiche automatiche: intestazione di aggiornamento
+    # (solo se c'e' davvero qualcosa da mandare in questo giro) seguita da
+    # tutti i messaggi accodati, in ordine. ---
     if outgoing:
         try:
             send_telegram_message(
@@ -614,6 +1039,89 @@ def main() -> int:
                 continue
             item["on_success"]()
 
+    # --- Comandi Telegram in arrivo: risposte dirette a /twap e /positions,
+    # inviate subito (non accodate/con intestazione), solo se il messaggio
+    # arriva dalla chat configurata (sicurezza: nessun altro puo' pilotare
+    # il bot). L'offset avanza comunque, anche se la risposta fallisce: i
+    # comandi Telegram non hanno bisogno di retry come le notifiche. ---
+    new_last_update_id = last_update_id
+    if bot_token:
+        updates = fetch_telegram_updates(bot_token, last_update_id + 1)
+        for update in updates:
+            update_id = update.get("update_id")
+            if isinstance(update_id, int) and update_id > new_last_update_id:
+                new_last_update_id = update_id
+
+            message = update.get("message") or {}
+            msg_chat_id = (message.get("chat") or {}).get("id")
+            if msg_chat_id is None or str(msg_chat_id) != str(chat_id):
+                continue  # ignora comandi da chat diverse da quella configurata
+
+            text = message.get("text")
+            reply_to = message.get("reply_to_message") or {}
+            reply_markup_override = None
+
+            if isinstance(reply_to, dict) and ALERT_PROMPT_MARKER in (reply_to.get("text") or ""):
+                # Risposta (Telegram "reply") al messaggio-prompt mandato dal
+                # pulsante /newalert: il testo e' direttamente "<coin>
+                # <direzione> <valore>", senza comando iniziale da togliere.
+                reply_text = try_create_alert((text or "").strip())
+            else:
+                command = normalize_command(text)
+                if command == "twap":
+                    reply_text = format_twap_status_message(twap_progress, twap_records_by_id, get_mids())
+                elif command == "positions":
+                    ch_state = get_positions_state()
+                    open_orders = fetch_open_orders(wallet)
+                    reply_text = format_positions_message(ch_state, open_orders, get_mids())
+                elif command == "alert":
+                    reply_text = try_create_alert(command_args(text))
+                elif command == "newalert":
+                    reply_text = (
+                        f"{ALERT_PROMPT_MARKER}: rispondi a questo messaggio (usa 'Rispondi'/'Reply' su "
+                        f"Telegram) con <COIN> <sopra|sotto> <VALORE|VALORE%>\n"
+                        f"Esempi: BTC sotto 65000  —  BTC sotto 5%"
+                    )
+                    reply_markup_override = ALERT_PROMPT_REPLY_MARKUP
+                elif command == "alerts":
+                    reply_text = format_alerts_list_message(price_alerts)
+                elif command in ("delalert", "rmalert"):
+                    args_text = command_args(text).strip()
+                    try:
+                        alert_id = int(args_text)
+                    except ValueError:
+                        reply_text = "⚠️ Usa: /delalert <id> (vedi gli id con /alerts)"
+                    else:
+                        before = len(price_alerts)
+                        price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
+                        reply_text = (
+                            f"🗑️ Alert {alert_id} rimosso."
+                            if len(price_alerts) < before
+                            else f"⚠️ Nessun alert trovato con id {alert_id}."
+                        )
+                elif command == "start":
+                    # Solo per mostrare/ripristinare la tastiera con i pulsanti
+                    # su una chat che non ha ancora ricevuto nessun messaggio.
+                    reply_text = (
+                        "👋 Bot Hyperliquid attivo. Usa i pulsanti qui sotto (o scrivi i comandi):\n"
+                        "/twap — stato dei TWAP\n"
+                        "/positions — posizioni aperte e stop\n"
+                        "/alerts — alert di prezzo attivi\n"
+                        "/newalert — crea un alert in modo guidato\n"
+                        "/alert <COIN> <sopra|sotto> <VALORE|VALORE%> — imposta un alert direttamente\n"
+                        "/delalert <id> — rimuove un alert"
+                    )
+                else:
+                    continue
+
+            try:
+                if reply_markup_override is not None:
+                    send_telegram_message(bot_token, chat_id, reply_text, dry_run=dry_run, reply_markup=reply_markup_override)
+                else:
+                    send_telegram_message(bot_token, chat_id, reply_text, dry_run=dry_run)
+            except Exception as e:
+                print(f"ERRORE invio risposta comando Telegram: {e}", file=sys.stderr)
+
     # Tieni solo i piu' recenti per non far crescere il file all'infinito.
     latest_tids = latest_tids[-500:]
     known_twap_ids_list = known_twap_ids_list[-500:]
@@ -625,7 +1133,9 @@ def main() -> int:
             "seen_tids": latest_tids,
             "twap_progress": twap_progress,
             "known_twap_ids": known_twap_ids_list,
-            "next_recap_due_ms": next_recap_due_ms,
+            "last_update_id": new_last_update_id,
+            "price_alerts": price_alerts,
+            "next_alert_id": next_alert_id,
         },
     )
     return 0
