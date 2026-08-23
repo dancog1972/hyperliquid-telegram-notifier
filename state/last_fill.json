@@ -331,8 +331,8 @@
   ],
   "last_positions_recap_ms": 1787499326176,
   "last_time_ms": 1787499877040,
-  "last_update_id": 603631079,
-  "next_alert_id": 11,
+  "last_update_id": 603631080,
+  "next_alert_id": 12,
   "price_alerts": [
     {
       "coin": "PUMP",
@@ -373,6 +373,15 @@
       "id": 10,
       "mids_key": "BTC",
       "price": 80000.0,
+      "triggered": false
+    },
+    {
+      "coin": "CAT",
+      "created_ms": 1787500155446,
+      "direction": "below",
+      "id": 11,
+      "mids_key": "@126",
+      "price": 1.5,
       "triggered": false
     }
   ],
