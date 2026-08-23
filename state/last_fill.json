@@ -330,8 +330,8 @@
     "2136125"
   ],
   "last_time_ms": 1787497480013,
-  "last_update_id": 603631068,
-  "next_alert_id": 7,
+  "last_update_id": 603631070,
+  "next_alert_id": 8,
   "price_alerts": [
     {
       "coin": "PUMP",
@@ -346,6 +346,14 @@
       "direction": "below",
       "id": 5,
       "price": 79.0,
+      "triggered": false
+    },
+    {
+      "coin": "PURR",
+      "created_ms": 1787497832135,
+      "direction": "below",
+      "id": 7,
+      "price": 0.12,
       "triggered": false
     }
   ],
