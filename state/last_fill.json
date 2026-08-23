@@ -331,16 +331,9 @@
   ],
   "last_positions_recap_ms": 1787499326176,
   "last_time_ms": 1787512597024,
-  "last_update_id": 603631095,
-  "next_alert_id": 15,
+  "last_update_id": 603631097,
+  "next_alert_id": 16,
   "price_alerts": [
-    {
-      "coin": "PUMP",
-      "created_ms": 1787495300224,
-      "direction": "below",
-      "id": 4,
-      "price": 0.00505
-    },
     {
       "coin": "HYPE",
       "created_ms": 1787496524001,
@@ -402,18 +395,27 @@
       "mids_key": "HYPE",
       "price": 85.0,
       "triggered": false
+    },
+    {
+      "coin": "PUMP",
+      "created_ms": 1787513125264,
+      "direction": "below",
+      "id": 15,
+      "mids_key": "PUMP",
+      "price": 0.0051,
+      "triggered": false
     }
   ],
   "seen_tids": [
     81388184441918,
     597389766252018,
-    1093318307319284,
     372388323057140,
+    1093318307319284,
     376889678417397,
     253006491837943,
     383031330655733,
-    932608554671609,
     177428596006393,
+    932608554671609,
     1094390907446774,
     707697211807227,
     292899684281854,
