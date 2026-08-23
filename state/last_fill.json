@@ -328,9 +328,10 @@
     "2133671",
     "2133792"
   ],
-  "last_time_ms": 1787474890018,
+  "last_time_ms": 1787475397034,
   "next_recap_due_ms": 1787478035474,
   "seen_tids": [
+    969993936176302,
     297408349894112,
     627924324304354,
     252814337699299,
@@ -827,10 +828,9 @@
     1048716289791996,
     1083293215479797,
     897263439448063,
-    331823774334816,
-    969993936176302,
-    732506621885992,
-    922296112179761
+    18143183739771,
+    115478462238083,
+    716852498988429
   ],
   "twap_progress": {
     "2115076": {
@@ -945,13 +945,13 @@
     },
     "2131512": {
       "coin": "PURR",
-      "executed_sz": 10763.0,
-      "last_ms": 1787474230020,
-      "notional": 1030.9673669999997,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 10884.0,
+      "last_ms": 1787475160045,
+      "notional": 1042.6339449999998,
+      "pending_count": 1,
+      "pending_notional": 11.666578000000001,
+      "pending_sz": 121.0,
+      "period_start_ms": 1787475160045,
       "side": "B"
     },
     "2131854": {
@@ -978,23 +978,23 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 138610.0,
-      "last_ms": 1787474767004,
-      "notional": 687.6952800000003,
-      "pending_count": 2,
-      "pending_notional": 11.652552,
-      "pending_sz": 2217.0,
+      "executed_sz": 140865.0,
+      "last_ms": 1787475397034,
+      "notional": 699.3491200000002,
+      "pending_count": 3,
+      "pending_notional": 23.306392,
+      "pending_sz": 4472.0,
       "period_start_ms": 1787474767004,
       "side": "B"
     },
     "2133792": {
       "coin": "PUMP",
-      "executed_sz": 178539.0,
-      "last_ms": 1787474845004,
-      "notional": 885.874499,
-      "pending_count": 1,
-      "pending_notional": 11.661351999999999,
-      "pending_sz": 2228.0,
+      "executed_sz": 180770.0,
+      "last_ms": 1787475325066,
+      "notional": 897.527012,
+      "pending_count": 2,
+      "pending_notional": 23.313865,
+      "pending_sz": 4459.0,
       "period_start_ms": 1787474845004,
       "side": "B"
     }
