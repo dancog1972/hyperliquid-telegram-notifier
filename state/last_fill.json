@@ -328,11 +328,9 @@
     "2133671",
     "2133792"
   ],
-  "last_time_ms": 1787478115038,
+  "last_time_ms": 1787478610002,
   "next_recap_due_ms": 1787481635474,
   "seen_tids": [
-    928924267774360,
-    412943098995556,
     731347910481168,
     627924324304354,
     252814337699299,
@@ -830,7 +828,9 @@
     1048716289791996,
     1083293215479797,
     897263439448063,
-    30177883007688
+    105218117769166,
+    1055976983450393,
+    1092837959595970
   ],
   "twap_progress": {
     "2115076": {
@@ -945,13 +945,13 @@
     },
     "2131512": {
       "coin": "PURR",
-      "executed_sz": 11221.0,
-      "last_ms": 1787477770040,
-      "notional": 1077.7108949999997,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 11332.0,
+      "last_ms": 1787478610002,
+      "notional": 1089.4546949999997,
+      "pending_count": 1,
+      "pending_notional": 11.7438,
+      "pending_sz": 111.0,
+      "period_start_ms": 1787478610002,
       "side": "B"
     },
     "2131854": {
@@ -978,24 +978,24 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 149869.0,
-      "last_ms": 1787477947032,
-      "notional": 745.9663410000002,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 152151.0,
+      "last_ms": 1787478577044,
+      "notional": 757.6227970000002,
+      "pending_count": 1,
+      "pending_notional": 11.656455999999999,
+      "pending_sz": 2282.0,
+      "period_start_ms": 1787478577044,
       "side": "B"
     },
     "2133792": {
       "coin": "PUMP",
-      "executed_sz": 194278.0,
-      "last_ms": 1787478115038,
-      "notional": 967.463334,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 199441.0,
+      "last_ms": 1787478595013,
+      "notional": 993.825612,
+      "pending_count": 1,
+      "pending_notional": 26.362278,
+      "pending_sz": 5163.0,
+      "period_start_ms": 1787478595013,
       "side": "B"
     }
   }
