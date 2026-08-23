@@ -176,7 +176,7 @@ DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 10
 # stessa): se invece se ne allontana di piu' (condizione piu' severa),
 # consideriamo la situazione urgente e torniamo a notificare ad ogni giro,
 # throttle o no.
-DEFAULT_ALERT_URGENT_DEVIATION_PCT = 4.0
+DEFAULT_ALERT_URGENT_DEVIATION_PCT = 8.0
 # Ogni quante ore mandare in automatico un riepilogo delle posizioni
 # (stesso contenuto della risposta a /positions, incl. saldi spot e
 # filtro "polvere" sulle posizioni perps) senza doverlo chiedere a mano.
