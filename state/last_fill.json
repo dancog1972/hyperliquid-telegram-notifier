@@ -330,9 +330,9 @@
     "2136125"
   ],
   "last_positions_recap_ms": 1787513728644,
-  "last_time_ms": 1787517910043,
-  "last_update_id": 603631103,
-  "next_alert_id": 18,
+  "last_time_ms": 1787518387018,
+  "last_update_id": 603631105,
+  "next_alert_id": 19,
   "price_alerts": [
     {
       "coin": "HYPE",
@@ -369,15 +369,6 @@
       "triggered": false
     },
     {
-      "coin": "CAT",
-      "created_ms": 1787501781696,
-      "direction": "above",
-      "id": 13,
-      "mids_key": "@126",
-      "price": 2.0,
-      "triggered": false
-    },
-    {
       "coin": "HYPE",
       "created_ms": 1787502258511,
       "direction": "above",
@@ -393,7 +384,7 @@
       "id": 15,
       "mids_key": "PUMP",
       "price": 0.0051,
-      "runs_since_notify": 2,
+      "runs_since_notify": 3,
       "triggered": true
     },
     {
@@ -403,7 +394,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -415,18 +406,26 @@
       "price": 1.3,
       "runs_since_notify": 0,
       "triggered": true
+    },
+    {
+      "coin": "CAT",
+      "created_ms": 1787518395120,
+      "direction": "below",
+      "id": 18,
+      "mids_key": "@126",
+      "price": 1.0,
+      "triggered": false
     }
   ],
   "seen_tids": [
-    868919609810079,
     597389766252018,
     1093318307319284,
     376889678417397,
     372388323057140,
     253006491837943,
     383031330655733,
-    932608554671609,
     177428596006393,
+    932608554671609,
     1094390907446774,
     707697211807227,
     292899684281854,
@@ -917,7 +916,8 @@
     1048716289791996,
     906378038478838,
     1083293215479797,
-    897263439448063
+    897263439448063,
+    663458380261212
   ],
   "twap_progress": {
     "2115076": {
@@ -1065,9 +1065,9 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 290574.0,
-      "last_ms": 1787517757044,
-      "notional": 1480.273341000001,
+      "executed_sz": 292862.0,
+      "last_ms": 1787518387018,
+      "notional": 1491.930701000001,
       "pending_count": 1,
       "pending_notional": 11.652552,
       "pending_sz": 2217.0,
