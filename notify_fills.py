@@ -660,12 +660,25 @@ def format_new_twap_message(record: dict) -> str:
     return "\n".join(lines)
 
 
+MAX_EXTRA_TWAP_RECORDS = 15
+
+
 def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mids: dict) -> str:
     """Risposta al comando /twap: stato di ogni TWAP di cui abbiamo
-    esecuzioni accumulate e/o un record noto (attivo o meno), con eseguito
-    cumulato, % di completamento se disponibile e differenza rispetto al
-    prezzo di mercato attuale."""
-    keys = sorted(set(twap_progress.keys()) | set(twap_records_by_id.keys()))
+    esecuzioni accumulate, piu' (se ce ne sono ancora spazio) i record
+    noti piu' recenti senza esecuzioni. L'endpoint usato per i record e'
+    best-effort e su alcuni account restituisce anche moltissimo storico
+    passato: senza un limite il messaggio puo' superare il limite di
+    lunghezza di Telegram (~4096 caratteri) e l'invio fallisce in
+    silenzio dal punto di vista dell'utente -- da qui il tetto su quanti
+    record "extra" (senza esecuzioni note) vengono mostrati."""
+    progress_keys = list(twap_progress.keys())
+    extra_items = [(key, r) for key, r in twap_records_by_id.items() if key not in twap_progress]
+    extra_items.sort(key=lambda kv: kv[1].get("start_ms") or 0, reverse=True)
+    omitted_count = max(0, len(extra_items) - MAX_EXTRA_TWAP_RECORDS)
+    extra_keys = [key for key, _ in extra_items[:MAX_EXTRA_TWAP_RECORDS]]
+
+    keys = sorted(progress_keys) + extra_keys
     if not keys:
         return "📊 Nessun TWAP trovato (ne' esecuzioni registrate ne' record noti)."
 
@@ -718,6 +731,9 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
             lines.append(f"   Ultima esecuzione: {fmt_ts(prog['last_ms'])}")
 
         blocks.append("\n".join(lines))
+
+    if omitted_count:
+        blocks.append(f"… e altri {omitted_count} TWAP piu' vecchi omessi (nessuna esecuzione registrata per questi).")
 
     return "\n\n".join(blocks)
 
@@ -835,6 +851,23 @@ def format_positions_message(clearinghouse_state: dict, open_orders: list, mids:
     return "\n\n".join(blocks)
 
 
+# Telegram rifiuta con "Bad Request: text is too long" qualunque messaggio
+# oltre questo limite di caratteri -- senza un tetto lato nostro, un
+# messaggio troppo lungo (es. troppi elementi elencati) fallisce l'invio,
+# e dal punto di vista dell'utente non arriva semplicemente nulla, senza
+# nessun indizio del perche'. truncate_for_telegram() e' la rete di
+# sicurezza finale, applicata a OGNI messaggio in send_telegram_message.
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+
+def truncate_for_telegram(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> str:
+    if len(text) <= limit:
+        return text
+    marker = "\n\n… (messaggio troncato, era troppo lungo per Telegram)"
+    cut = max(0, limit - len(marker))
+    return text[:cut] + marker
+
+
 def send_telegram_message(
     bot_token: str,
     chat_id: str,
@@ -845,8 +878,10 @@ def send_telegram_message(
 ) -> None:
     """Manda un messaggio Telegram. Per default allega la tastiera con i
     pulsanti /twap e /positions (vedi COMMAND_KEYBOARD) cosi' resta sempre
-    visibile; passare reply_markup=None per un messaggio senza tastiera."""
-    full_text = f"{separator}\n{text}"
+    visibile; passare reply_markup=None per un messaggio senza tastiera.
+    Il testo finale viene troncato se supera il limite di Telegram (vedi
+    truncate_for_telegram) invece di far fallire l'invio in silenzio."""
+    full_text = truncate_for_telegram(f"{separator}\n{text}")
     if dry_run:
         print("--- [DRY RUN] messaggio che verrebbe inviato ---")
         print(full_text)
