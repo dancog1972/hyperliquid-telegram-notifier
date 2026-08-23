@@ -91,27 +91,33 @@ TELEGRAM_CHAT_ID: comandi da altre chat vengono ignorati.
 
 Alert di prezzo (🔔): ad ogni controllo, se ci sono alert attivi, il
 prezzo attuale (allMids) viene confrontato con la soglia impostata. Cosa
-succede quando scatta dipende dal fatto che tu abbia o meno una posizione
-APERTA su quella coin in quel momento:
-- SENZA posizione aperta: notifica una volta sola e l'alert viene rimosso
-  (va reimpostato con /alert se lo si vuole di nuovo attivo) -- come
-  prima.
-- CON una posizione aperta: la notifica include anche un riepilogo della
-  posizione (direzione, size, entry vs prezzo attuale, PnL, prezzo di
-  liquidazione) e l'alert NON viene rimosso -- il primo avviso e' sempre
-  immediato, poi si ripete come "promemoria" ogni ALERT_REPEAT_EVERY_N_RUNS
-  controlli (variabile d'ambiente, default 5 -- non piu' ad ogni singolo
-  giro, per non intasare la chat) finche' la condizione resta vera E la
-  posizione resta aperta. QUESTO THROTTLE VALE PERO' SOLO SE IL PREZZO
-  RESTA VICINO ALLA SOGLIA: se lo scarto percentuale tra prezzo attuale e
-  soglia supera ALERT_URGENT_DEVIATION_PCT (variabile d'ambiente, default
-  4%), la situazione e' considerata urgente e si torna a notificare ad
-  OGNI singolo giro finche' resta cosi'. Quando il prezzo torna oltre la
-  soglia arriva un ultimo messaggio ("✅ Allarme rientrato") ma l'alert
-  RESTA ATTIVO (mantenuto): torna solo "in ascolto" (e il contatore si
-  azzera) e puo' scattare di nuovo in futuro senza doverlo reimpostare. Si
-  disattiva per davvero (rimosso, "🔕 Alert disattivato") solo quando
-  chiudi la posizione -- a quel punto non c'e' piu' nulla da proteggere.
+succede quando scatta dipende dal fatto che tu POSSIEDA o meno quella coin
+in quel momento, sia come posizione PERPS aperta sia come saldo SPOT non
+nullo (una qualunque delle due basta -- se c'e' una posizione perps viene
+mostrata quella nel riepilogo, piu' ricca di dettagli, ma l'alert resta
+"sticky" anche solo con lo spot):
+- SENZA ne' posizione ne' saldo spot: notifica una volta sola e l'alert
+  viene rimosso (va reimpostato con /alert se lo si vuole di nuovo attivo)
+  -- come prima.
+- CON una posizione perps e/o un saldo spot: la notifica include anche un
+  riepilogo (posizione: direzione, size, entry vs prezzo attuale, PnL,
+  prezzo di liquidazione; saldo spot: quantita' e controvalore stimato) e
+  l'alert NON viene rimosso -- il primo avviso e' sempre immediato, poi si
+  ripete come "promemoria" ogni ALERT_REPEAT_EVERY_N_RUNS controlli
+  (variabile d'ambiente, default 5 -- non piu' ad ogni singolo giro, per
+  non intasare la chat) finche' la condizione resta vera E possiedi ancora
+  quella coin, in un modo o nell'altro. QUESTO THROTTLE VALE PERO' SOLO SE
+  IL PREZZO RESTA VICINO ALLA SOGLIA: se lo scarto percentuale tra prezzo
+  attuale e soglia supera ALERT_URGENT_DEVIATION_PCT (variabile
+  d'ambiente, default 4%), la situazione e' considerata urgente e si
+  torna a notificare ad OGNI singolo giro finche' resta cosi'. Quando il
+  prezzo torna oltre la soglia arriva un ultimo messaggio ("✅ Allarme
+  rientrato") ma l'alert RESTA ATTIVO (mantenuto): torna solo "in
+  ascolto" (e il contatore si azzera) e puo' scattare di nuovo in futuro
+  senza doverlo reimpostare. Si disattiva per davvero (rimosso, "🔕 Alert
+  disattivato") solo quando non possiedi piu' quella coin ne' come
+  posizione ne' come saldo spot -- a quel punto non c'e' piu' nulla da
+  proteggere.
 
 Ogni messaggio del bot porta anche una tastiera Telegram persistente
 ("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
@@ -780,6 +786,26 @@ def format_position_summary(pos: dict, current_price) -> str:
     return "\n".join(lines)
 
 
+def format_spot_holding_summary(balance: dict, current_price) -> str:
+    """Riassunto compatto di un saldo SPOT (usato nei messaggi di alert,
+    analogo a format_position_summary ma per lo spot: nessuna leva, entry
+    price o prezzo di liquidazione -- solo quantita' e, se current_price e'
+    disponibile, controvalore stimato in USDC."""
+    coin = balance.get("coin", "?")
+    total = balance.get("total", 0)
+    try:
+        total_f = float(total)
+    except (TypeError, ValueError):
+        return f"Saldo spot: {total} {coin}"
+    line = f"Saldo spot: {total_f:g} {coin}"
+    if current_price is not None:
+        try:
+            line += f" (~{total_f * float(current_price):g} USDC)"
+        except (TypeError, ValueError):
+            pass
+    return line
+
+
 def format_alert_triggered_message(
     alert: dict,
     current_price: float,
@@ -788,16 +814,22 @@ def format_alert_triggered_message(
     repeat_every_n_runs: int = DEFAULT_ALERT_REPEAT_EVERY_N_RUNS,
     urgent: bool = False,
     urgent_deviation_pct: float = DEFAULT_ALERT_URGENT_DEVIATION_PCT,
+    spot_balance: dict | None = None,
 ) -> str:
     """Notifica automatica mandata quando un alert di prezzo scatta (o
-    resta attivo). Se c'e' una posizione aperta su quella coin, l'alert
-    resta attivo e questa notifica si ripete ogni repeat_every_n_runs giri
-    (non ad ogni controllo) finche' la condizione persiste E la posizione
-    resta aperta -- ECCETTO quando il prezzo si e' allontanato dalla soglia
-    di piu' di urgent_deviation_pct (vedi main()): in quel caso (urgent=True)
-    il throttle viene bypassato e si notifica ad ogni giro, perche' la
-    situazione e' considerata piu' urgente. Vedi main() per la logica di
-    stato ("triggered") e format_alert_cleared_message per come si ferma."""
+    resta attivo). Se hai una posizione PERPS aperta su quella coin (o, in
+    mancanza, un saldo SPOT non nullo -- vedi main()), l'alert resta
+    attivo e questa notifica si ripete ogni repeat_every_n_runs giri (non
+    ad ogni controllo) finche' la condizione persiste E possiedi ancora
+    quella coin (in un modo o nell'altro) -- ECCETTO quando il prezzo si
+    e' allontanato dalla soglia di piu' di urgent_deviation_pct (vedi
+    main()): in quel caso (urgent=True) il throttle viene bypassato e si
+    notifica ad ogni giro, perche' la situazione e' considerata piu'
+    urgente. Se e' presente sia una posizione perps sia un saldo spot,
+    viene mostrata solo la posizione perps (piu' ricca di dettagli:
+    leva, PnL, liquidazione), ma l'alert resta "sticky" grazie a
+    entrambe. Vedi main() per la logica di stato ("triggered") e
+    format_alert_cleared_message per come si ferma."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
@@ -809,8 +841,13 @@ def format_alert_triggered_message(
             extra = f" ({alert['pct']}%)"
     header = "🔔 Alert ancora attivo" if repeated else "🔔 Alert scattato"
     lines = [f"{header}: {coin} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
+    holding_line = None
     if position is not None:
-        lines.append(format_position_summary(position, current_price))
+        holding_line = format_position_summary(position, current_price)
+    elif spot_balance is not None:
+        holding_line = format_spot_holding_summary(spot_balance, current_price)
+    if holding_line is not None:
+        lines.append(holding_line)
         if not repeated:
             cadenza = "questo e' il primo avviso"
         elif urgent:
@@ -822,7 +859,8 @@ def format_alert_triggered_message(
             cadenza = f"ti aggiorno ogni {repeat_every_n_runs} controlli"
         lines.append(
             f"({cadenza} finche' resti in questa condizione; quando rientra ricevi un ultimo avviso e l'alert "
-            "resta attivo, pronto a scattare di nuovo — si disattiva solo se chiudi la posizione)"
+            "resta attivo, pronto a scattare di nuovo — si disattiva solo se non possiedi più questa coin, "
+            "ne' come posizione ne' come saldo spot)"
         )
     else:
         lines.append("(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)")
@@ -830,18 +868,21 @@ def format_alert_triggered_message(
 
 
 def format_alert_cleared_message(alert: dict, current_price: float, reason: str) -> str:
-    """Notifica mandata quando un alert "attivo" (con posizione collegata,
-    vedi format_alert_triggered_message) smette di ripetersi:
+    """Notifica mandata quando un alert "attivo" (con posizione perps e/o
+    saldo spot collegato, vedi format_alert_triggered_message) smette di
+    ripetersi:
     - reason="recovered": il prezzo e' rientrato oltre la soglia. L'alert
       NON viene rimosso, torna solo "in ascolto" (vedi make_alert_rearm_cb
       in main()) e puo' scattare di nuovo in futuro senza doverlo
-      reimpostare -- resta legato alla posizione finche' questa e' aperta.
-    - reason="position_closed": la posizione e' stata chiusa, non c'e' piu'
-      nulla da proteggere -- l'alert viene rimosso per davvero stavolta."""
+      reimpostare -- resta legato alla coin finche' ne possiedi ancora, in
+      un modo o nell'altro.
+    - reason="holding_closed": non hai piu' ne' una posizione perps ne' un
+      saldo spot su quella coin, non c'e' piu' nulla da proteggere --
+      l'alert viene rimosso per davvero stavolta."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
-    if reason == "position_closed":
-        head = f"🔕 Alert disattivato: la posizione su {coin} e' stata chiusa."
+    if reason == "holding_closed":
+        head = f"🔕 Alert disattivato: non hai più né una posizione né un saldo spot su {coin}."
         footer = "(non ricevi più notifiche per questo alert)"
     else:
         verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
@@ -1335,6 +1376,12 @@ def main() -> int:
             spot_meta_cache = fetch_spot_meta()
         return spot_meta_cache
 
+    def find_open_position(coin):
+        return next((p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None)
+
+    def find_spot_balance(coin):
+        return next((b for b in extract_spot_balances(get_spot_state()) if b.get("coin") == coin), None)
+
     def try_create_alert(args_text: str) -> str:
         """Interpreta args_text come "<COIN> <sopra|sotto> <VALORE|VALORE%>"
         e, se valido, aggiunge l'alert a price_alerts. Funziona per QUALSIASI
@@ -1606,13 +1653,17 @@ def main() -> int:
             )
 
             if alert.get("triggered"):
-                position = next(
-                    (p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None
-                )
-                if position is None:
+                # Una posizione perps aperta OPPURE un saldo spot non nullo
+                # su questa coin bastano a tenere l'alert "sticky" -- si
+                # controlla lo spot solo se non c'e' gia' una posizione
+                # perps (che e' comunque piu' ricca da mostrare), per non
+                # sprecare una chiamata di rete quando non serve.
+                position = find_open_position(coin)
+                spot_balance = None if position is not None else find_spot_balance(coin)
+                if position is None and spot_balance is None:
                     outgoing.append(
                         {
-                            "text": format_alert_cleared_message(alert, current_price, "position_closed"),
+                            "text": format_alert_cleared_message(alert, current_price, "holding_closed"),
                             "on_success": make_alert_remove_cb(alert.get("id")),
                             "kind": "alerts",
                         }
@@ -1645,6 +1696,7 @@ def main() -> int:
                                     repeat_every_n_runs=alert_repeat_every_n_runs,
                                     urgent=urgent,
                                     urgent_deviation_pct=alert_urgent_deviation_pct,
+                                    spot_balance=spot_balance,
                                 ),
                                 "on_success": make_alert_reset_counter_cb(alert),
                                 "kind": "alerts",
@@ -1657,13 +1709,14 @@ def main() -> int:
                         # on_success -- non c'e' nulla da ritentare).
                         alert["runs_since_notify"] = runs_since_notify
             elif condition_met:
-                position = next(
-                    (p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None
-                )
-                if position is not None:
+                position = find_open_position(coin)
+                spot_balance = None if position is not None else find_spot_balance(coin)
+                if position is not None or spot_balance is not None:
                     outgoing.append(
                         {
-                            "text": format_alert_triggered_message(alert, current_price, position, repeated=False),
+                            "text": format_alert_triggered_message(
+                                alert, current_price, position, repeated=False, spot_balance=spot_balance
+                            ),
                             "on_success": make_alert_mark_active_cb(alert),
                             "kind": "alerts",
                         }
