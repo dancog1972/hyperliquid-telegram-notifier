@@ -382,8 +382,8 @@
       "id": 12,
       "mids_key": "@126",
       "price": 1.4,
-      "runs_since_notify": 9,
-      "triggered": true
+      "runs_since_notify": 0,
+      "triggered": false
     },
     {
       "coin": "CAT",
