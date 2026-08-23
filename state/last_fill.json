@@ -338,7 +338,8 @@
       "created_ms": 1787494461107,
       "direction": "below",
       "id": 3,
-      "price": 0.12
+      "price": 0.12,
+      "triggered": true
     },
     {
       "coin": "PUMP",
