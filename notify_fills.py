@@ -20,6 +20,11 @@ esecuzioni trovate:
   slice (sarebbero troppe, e cosi' anche i recap periodici che c'erano in
   precedenza). L'eseguito cumulato viene solo accumulato silenziosamente in
   stato; per vederlo si usa il comando Telegram /twap (vedi sotto).
+- Riepilogo posizioni (🕓): automatico ogni
+  POSITIONS_RECAP_INTERVAL_HOURS ore (variabile d'ambiente, default 4) --
+  stesso contenuto della risposta al comando /positions (posizioni perps
+  sopra la soglia "polvere" + saldi spot). Il primo riepilogo parte subito
+  al primo avvio (nessuno stato precedente), poi ogni N ore da quello.
 
 Comandi Telegram (a richiesta, nessun invio automatico):
   /twap                        Riepilogo TWAP PER COIN/TICKER (un blocco
@@ -31,23 +36,35 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 effort endpoint storico TWAP non vengono mai
                                 mostrati uno per uno (rischio di superare il
                                 limite di lunghezza di Telegram).
-  /positions                   Posizioni perps aperte: size e direzione,
-                                entry vs prezzo attuale, PnL non
-                                realizzato, prezzo di liquidazione ed
-                                eventuali ordini di stop/take-profit
-                                collegati.
+  /positions                   Posizioni PERPS aperte (sopra i
+                                MIN_POSITION_VALUE_USD_TO_SHOW USDC di
+                                valore nozionale, default 10 -- quelle
+                                sotto sono considerate "polvere" e omesse,
+                                con un conteggio di quante non sono
+                                mostrate): size e direzione, entry vs
+                                prezzo attuale, PnL non realizzato, prezzo
+                                di liquidazione ed eventuali ordini di
+                                stop/take-profit collegati -- seguite da un
+                                blocco separato con i saldi SPOT non nulli
+                                (conto distinto dai perps su Hyperliquid,
+                                NON filtrato per importo, con controvalore
+                                in USDC quando reperibile).
   /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
                                 Imposta un alert di prezzo per QUALSIASI
-                                coin quotata su Hyperliquid (non solo
-                                quelle con una posizione aperta). VALORE
-                                puo' essere un prezzo assoluto ("/alert
-                                BTC sotto 65000") oppure una percentuale
-                                ("/alert BTC sotto 5%"), calcolata rispetto
-                                al prezzo di mercato attuale nel momento in
-                                cui l'alert viene creato (accetta anche
-                                "<"/">" al posto di sotto/sopra). La
-                                conferma include anche l'elenco aggiornato
-                                di tutti gli alert attivi.
+                                coin quotata su Hyperliquid, sia PERPS che
+                                SPOT (non solo quelle con una posizione
+                                aperta) -- per i ticker spot non
+                                "canonici" la chiave di prezzo viene
+                                risolta automaticamente via spotMeta (vedi
+                                resolve_spot_mid_key). VALORE puo' essere
+                                un prezzo assoluto ("/alert BTC sotto
+                                65000") oppure una percentuale ("/alert BTC
+                                sotto 5%"), calcolata rispetto al prezzo di
+                                mercato attuale nel momento in cui l'alert
+                                viene creato (accetta anche "<"/">" al
+                                posto di sotto/sopra). La conferma include
+                                anche l'elenco aggiornato di tutti gli
+                                alert attivi.
   /newalert                     Crea un alert in modo guidato: il bot manda
                                 un messaggio-prompt (con "Rispondi"/"Reply"
                                 gia' pronto su Telegram) e basta scrivere
@@ -79,12 +96,16 @@ APERTA su quella coin in quel momento:
   immediato, poi si ripete come "promemoria" ogni ALERT_REPEAT_EVERY_N_RUNS
   controlli (variabile d'ambiente, default 5 -- non piu' ad ogni singolo
   giro, per non intasare la chat) finche' la condizione resta vera E la
-  posizione resta aperta. Quando il prezzo torna oltre la soglia arriva un
-  ultimo messaggio ("✅ Allarme rientrato") ma l'alert RESTA ATTIVO
-  (mantenuto): torna solo "in ascolto" (e il contatore si azzera) e puo'
-  scattare di nuovo in futuro senza doverlo reimpostare. Si disattiva per
-  davvero (rimosso, "🔕 Alert disattivato") solo quando chiudi la posizione
-  -- a quel punto non c'e' piu' nulla da proteggere.
+  posizione resta aperta. QUESTO THROTTLE VALE PERO' SOLO SE IL PREZZO
+  RESTA VICINO ALLA SOGLIA: se lo scarto percentuale tra prezzo attuale e
+  soglia supera ALERT_URGENT_DEVIATION_PCT (variabile d'ambiente, default
+  4%), la situazione e' considerata urgente e si torna a notificare ad
+  OGNI singolo giro finche' resta cosi'. Quando il prezzo torna oltre la
+  soglia arriva un ultimo messaggio ("✅ Allarme rientrato") ma l'alert
+  RESTA ATTIVO (mantenuto): torna solo "in ascolto" (e il contatore si
+  azzera) e puo' scattare di nuovo in futuro senza doverlo reimpostare. Si
+  disattiva per davvero (rimosso, "🔕 Alert disattivato") solo quando
+  chiudi la posizione -- a quel punto non c'e' piu' nulla da proteggere.
 
 Ogni messaggio del bot porta anche una tastiera Telegram persistente
 ("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
@@ -92,11 +113,15 @@ comuni si possono richiamare con un tocco invece di scriverli a mano;
 scrivere "/start" al bot manda un messaggio di benvenuto che la mostra
 anche a chat vuota.
 
-Ogni messaggio Telegram e' preceduto da una riga separatrice, per restare
-visivamente distinto anche quando le notifiche arrivano ravvicinate. Ogni
-giro di controllo in cui c'e' almeno una notifica automatica da mandare e'
-preceduto da un'unica intestazione "nuovo aggiornamento" ben visibile
-(nessuna intestazione se non c'e' nulla di nuovo).
+Ogni notifica AUTOMATICA (fill/nuovi TWAP, alert di prezzo, riepilogo
+posizioni) e' preceduta dalla propria intestazione "NUOVO AGGIORNAMENTO",
+colorata per categoria cosi' si riconoscono a colpo d'occhio anche senza
+leggere il testo (vedi UPDATE_HEADER_BAR_BY_KIND): 🟥 rosso per
+ordini/fill/nuovi TWAP, 🟧 arancione per gli alert di prezzo, 🟩 verde per
+il riepilogo posizioni periodico. Le risposte ai comandi Telegram (es.
+/twap, /positions, /alert) restano invece precedute da una semplice riga
+separatrice neutra, per restare visivamente distinte senza per questo
+sembrare una notifica automatica.
 
 Pensato per girare periodicamente (es. ogni 5-10 minuti via GitHub Actions
 schedulato / trigger esterno), non come processo always-on.
@@ -134,6 +159,16 @@ DEFAULT_LOOKBACK_MINUTES = 15
 # ripetiamo solo ogni N giri, per non intasare la chat. Il primo avviso
 # resta immediato; solo i "promemoria" successivi vengono diradati.
 DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 5
+# Il throttle a N giri sopra vale solo se il prezzo resta "vicino" alla
+# soglia (entro questa percentuale, calcolata rispetto alla soglia
+# stessa): se invece se ne allontana di piu' (condizione piu' severa),
+# consideriamo la situazione urgente e torniamo a notificare ad ogni giro,
+# throttle o no.
+DEFAULT_ALERT_URGENT_DEVIATION_PCT = 4.0
+# Ogni quante ore mandare in automatico un riepilogo delle posizioni
+# (stesso contenuto della risposta a /positions, incl. saldi spot e
+# filtro "polvere" sulle posizioni perps) senza doverlo chiedere a mano.
+DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS = 4.0
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento. Se il
 # database IANA non e' disponibile sul runner, si ricade su UTC senza far
@@ -187,11 +222,22 @@ ALERT_PROMPT_REPLY_MARKUP = {
     "selective": True,
 }
 
-# Barra piu' vistosa (Telegram non supporta colori nel testo dei messaggi
-# dei bot, quindi si usa un emoji a blocco colorato ben visibile) usata solo
-# per l'intestazione "nuovo aggiornamento", cosi' risalta rispetto alle
-# notifiche vere e proprie che la seguono.
-UPDATE_HEADER_BAR = "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧"
+# Barre piu' vistose (Telegram non supporta colori nel testo dei messaggi
+# dei bot, quindi si usano emoji a blocco colorato) usate come intestazione
+# "NUOVO AGGIORNAMENTO" delle notifiche AUTOMATICHE (vedi
+# format_update_header), colorate per categoria cosi' si riconoscono a
+# colpo d'occhio anche senza leggere il testo: rosso per ordini/fill/nuovi
+# TWAP, arancione per gli alert di prezzo, verde per il riepilogo posizioni
+# periodico. Le risposte ai comandi Telegram (es. /twap, /positions) NON
+# passano da qui: usano il separatore neutro MESSAGE_SEPARATOR.
+UPDATE_HEADER_BAR_ORDERS = "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥"
+UPDATE_HEADER_BAR_ALERTS = "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧"
+UPDATE_HEADER_BAR_POSITIONS = "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩"
+UPDATE_HEADER_BAR_BY_KIND = {
+    "orders": UPDATE_HEADER_BAR_ORDERS,
+    "alerts": UPDATE_HEADER_BAR_ALERTS,
+    "positions": UPDATE_HEADER_BAR_POSITIONS,
+}
 
 
 def env_or_die(name: str) -> str:
@@ -334,6 +380,95 @@ def fetch_clearinghouse_state(wallet: str) -> dict:
     return {}
 
 
+def fetch_spot_state(wallet: str) -> dict:
+    """Stato del conto SPOT (saldi token, distinti dalle posizioni perps con
+    leva di clearinghouseState). Best-effort: in caso di errore ritorna un
+    dizionario vuoto (il blocco spot di /positions viene semplicemente
+    omesso, invece di mostrare dati inventati)."""
+    try:
+        result = http_post_json(HL_INFO_URL, {"type": "spotClearinghouseState", "user": wallet})
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare i saldi spot (spotClearinghouseState): {e}", file=sys.stderr)
+    return {}
+
+
+def fetch_spot_meta() -> dict:
+    """Metadati dei token/coppie spot (spotMeta): serve per risolvere un
+    ticker spot (es. "CAT") alla chiave usata per lui in allMids -- vedi
+    resolve_spot_mid_key, perche' per lo spot allMids NON e' indicizzato
+    per ticker come per i perps. Best-effort: in caso di errore ritorna un
+    dizionario vuoto (la risoluzione viene semplicemente saltata)."""
+    try:
+        result = http_post_json(HL_INFO_URL, {"type": "spotMeta"})
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare i metadati spot (spotMeta): {e}", file=sys.stderr)
+    return {}
+
+
+def resolve_spot_mid_key(coin: str, spot_meta: dict):
+    """Dato un ticker spot (es. "CAT"), ritorna la chiave da usare per
+    cercarne il prezzo in allMids (vedi fetch_all_mids/get_price_for_coin).
+
+    Su Hyperliquid allMids NON indicizza le coppie spot per nome del
+    token: la coppia "canonica" (al momento solo PURR/USDC) usa il nome
+    leggibile "PURR/USDC", tutte le altre usano un id posizionale
+    "@<indice della coppia>" (documentato da Hyperliquid, non verificabile
+    con accesso di rete da qui). Bisogna quindi passare da spotMeta:
+    1. trovare il token per nome nell'array "tokens" -> il suo indice;
+    2. trovare in "universe" la coppia che contiene quell'indice -> il suo
+       "name" e' la chiave giusta in allMids.
+    Ritorna None se il ticker non viene trovato o spot_meta non e'
+    interpretabile -- mai una chiave indovinata."""
+    if not isinstance(spot_meta, dict):
+        return None
+    tokens = spot_meta.get("tokens")
+    universe = spot_meta.get("universe")
+    if not isinstance(tokens, list) or not isinstance(universe, list):
+        return None
+    token_index = None
+    for t in tokens:
+        if isinstance(t, dict) and t.get("name") == coin:
+            token_index = t.get("index")
+            break
+    if token_index is None:
+        return None
+    for pair in universe:
+        if not isinstance(pair, dict):
+            continue
+        pair_tokens = pair.get("tokens")
+        if isinstance(pair_tokens, list) and token_index in pair_tokens:
+            name = pair.get("name")
+            if name:
+                return name
+    return None
+
+
+def get_price_for_coin(coin: str, mids: dict, spot_meta: dict | None = None):
+    """Prezzo attuale (mid) per un ticker, sia PERPS (chiave diretta in
+    allMids, es. "BTC") sia SPOT: se il ticker non si trova direttamente e
+    spot_meta e' disponibile, prova a risolverlo con resolve_spot_mid_key
+    prima di arrendersi. Ritorna un float, o None se il prezzo non si
+    riesce a determinare in nessuno dei due modi (mai un valore
+    indovinato)."""
+    if not isinstance(mids, dict):
+        return None
+    raw = mids.get(coin)
+    if raw is None and spot_meta:
+        resolved_key = resolve_spot_mid_key(coin, spot_meta)
+        if resolved_key is not None:
+            raw = mids.get(resolved_key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_open_orders(wallet: str) -> list:
     """Ordini aperti (incluso stop-loss/take-profit con trigger). Best-effort:
     in caso di errore ritorna una lista vuota."""
@@ -446,6 +581,98 @@ def extract_open_positions(clearinghouse_state: dict) -> list:
     return positions
 
 
+# Sotto questa soglia (in USDC di valore nozionale) una posizione perps
+# viene considerata "polvere" e omessa dal blocco "Posizioni aperte" di
+# /positions, per non intasare il messaggio con residui irrilevanti.
+MIN_POSITION_VALUE_USD_TO_SHOW = 10.0
+
+
+def get_position_value_usd(pos: dict, mids: dict):
+    """Valore nozionale approssimativo (in USDC) di una posizione perps,
+    usato per il filtro "polvere" di /positions (vedi
+    MIN_POSITION_VALUE_USD_TO_SHOW). Prova, in ordine: il campo
+    "positionValue" gia' fornito da clearinghouseState (il piu'
+    affidabile); altrimenti size * prezzo attuale (allMids); altrimenti
+    size * entry price. Ritorna None se nessuno dei tre e' disponibile --
+    mai un valore indovinato."""
+    raw = pos.get("positionValue")
+    if raw is not None:
+        try:
+            return abs(float(raw))
+        except (TypeError, ValueError):
+            pass
+    try:
+        szi = abs(float(pos.get("szi", 0)))
+    except (TypeError, ValueError):
+        szi = 0.0
+    if szi:
+        coin = pos.get("coin")
+        for price_raw in (mids.get(coin) if isinstance(mids, dict) else None, pos.get("entryPx")):
+            if price_raw is None:
+                continue
+            try:
+                return szi * float(price_raw)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def extract_spot_balances(spot_state: dict) -> list:
+    """Ritorna i saldi spot non nulli da spotClearinghouseState (schema
+    best-effort, non verificabile con certezza da qui -- vedi
+    format_spot_balances_block): ogni voce che non si riesce a
+    interpretare in sicurezza viene semplicemente ignorata invece di
+    mostrare dati indovinati."""
+    if not isinstance(spot_state, dict):
+        return []
+    raw = spot_state.get("balances")
+    if not isinstance(raw, list):
+        return []
+    balances = []
+    for b in raw:
+        if not isinstance(b, dict):
+            continue
+        coin = b.get("coin")
+        if not coin:
+            continue
+        try:
+            total = float(b.get("total", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if total == 0:
+            continue
+        balances.append({"coin": coin, "total": total})
+    return balances
+
+
+def format_spot_balances_block(spot_state: dict, mids: dict, spot_meta: dict | None = None) -> str | None:
+    """Blocco "Saldi spot" per /positions: saldi non nulli dei token nel
+    wallet spot (NON posizioni con leva come i perps di
+    extract_open_positions -- sono due conti separati su Hyperliquid). Il
+    controvalore in USDC viene calcolato con get_price_for_coin (che sa
+    risolvere anche i ticker spot tramite spot_meta, se passato -- vedi
+    resolve_spot_mid_key); se non si trova alcun prezzo si mostra solo la
+    quantita', senza inventare un valore. Nessun filtro per importo qui
+    (il filtro "polvere" sotto una certa soglia si applica solo alle
+    POSIZIONI perps, vedi MIN_POSITION_VALUE_USD_TO_SHOW in
+    format_positions_message). Ritorna None se non ci sono saldi spot da
+    mostrare."""
+    balances = extract_spot_balances(spot_state)
+    if not balances:
+        return None
+    lines = ["💰 Saldi spot:"]
+    for b in sorted(balances, key=lambda x: x["coin"]):
+        coin = b["coin"]
+        total = b["total"]
+        if coin == "USDC":
+            lines.append(f"— {coin}: {total:g} (liquidità)")
+            continue
+        price = get_price_for_coin(coin, mids, spot_meta)
+        value_txt = f" (~{total * price:g} USDC)" if price is not None else ""
+        lines.append(f"— {coin}: {total:g}{value_txt}")
+    return "\n".join(lines)
+
+
 def format_alerts_list_message(alerts: list) -> str:
     """Risposta al comando /alerts: elenco degli alert di prezzo attivi."""
     if not alerts:
@@ -524,13 +751,18 @@ def format_alert_triggered_message(
     position: dict | None = None,
     repeated: bool = False,
     repeat_every_n_runs: int = DEFAULT_ALERT_REPEAT_EVERY_N_RUNS,
+    urgent: bool = False,
+    urgent_deviation_pct: float = DEFAULT_ALERT_URGENT_DEVIATION_PCT,
 ) -> str:
     """Notifica automatica mandata quando un alert di prezzo scatta (o
     resta attivo). Se c'e' una posizione aperta su quella coin, l'alert
     resta attivo e questa notifica si ripete ogni repeat_every_n_runs giri
     (non ad ogni controllo) finche' la condizione persiste E la posizione
-    resta aperta -- vedi main() per la logica di stato ("triggered") e
-    format_alert_cleared_message per come si ferma."""
+    resta aperta -- ECCETTO quando il prezzo si e' allontanato dalla soglia
+    di piu' di urgent_deviation_pct (vedi main()): in quel caso (urgent=True)
+    il throttle viene bypassato e si notifica ad ogni giro, perche' la
+    situazione e' considerata piu' urgente. Vedi main() per la logica di
+    stato ("triggered") e format_alert_cleared_message per come si ferma."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
@@ -544,7 +776,15 @@ def format_alert_triggered_message(
     lines = [f"{header}: {coin} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
     if position is not None:
         lines.append(format_position_summary(position, current_price))
-        cadenza = "questo e' il primo avviso" if not repeated else f"ti aggiorno ogni {repeat_every_n_runs} controlli"
+        if not repeated:
+            cadenza = "questo e' il primo avviso"
+        elif urgent:
+            cadenza = (
+                f"il prezzo si e' allontanato di oltre il {urgent_deviation_pct:g}% dalla soglia: "
+                f"ti aggiorno ad ogni controllo"
+            )
+        else:
+            cadenza = f"ti aggiorno ogni {repeat_every_n_runs} controlli"
         lines.append(
             f"({cadenza} finche' resti in questa condizione; quando rientra ricevi un ultimo avviso e l'alert "
             "resta attivo, pronto a scattare di nuovo — si disattiva solo se chiudi la posizione)"
@@ -641,12 +881,13 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_update_header(now_ms: int) -> str:
-    """Intestazione mandata una sola volta all'inizio di ogni giro in cui
-    c'e' almeno un messaggio automatico da inviare, per separare
-    visivamente un controllo dall'altro. Mostrata nel fuso orario
-    DISPLAY_TIMEZONE quando disponibile, altrimenti in UTC (mai un crash
-    per questo)."""
+def format_update_header(now_ms: int, bar: str = UPDATE_HEADER_BAR_ORDERS) -> str:
+    """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill, alert,
+    riepilogo posizioni), colorata per categoria tramite `bar` (vedi
+    UPDATE_HEADER_BAR_ORDERS/ALERTS/POSITIONS e UPDATE_HEADER_BAR_BY_KIND)
+    cosi' si riconoscono a colpo d'occhio anche senza leggere il testo.
+    Mostrata nel fuso orario DISPLAY_TIMEZONE quando disponibile,
+    altrimenti in UTC (mai un crash per questo)."""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
@@ -657,7 +898,7 @@ def format_update_header(now_ms: int) -> str:
     mese = ITALIAN_MONTHS[dt.month - 1]
     return (
         f"🕐 NUOVO AGGIORNAMENTO — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
-        f"{UPDATE_HEADER_BAR}"
+        f"{bar}"
     )
 
 
@@ -759,10 +1000,30 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
     return "\n\n".join(blocks)
 
 
-def format_positions_message(clearinghouse_state: dict, open_orders: list, mids: dict) -> str:
-    """Risposta al comando /positions: posizioni perps aperte con entry vs
-    prezzo attuale, PnL, prezzo di liquidazione ed eventuali stop/TP
-    collegati (dedotti dagli ordini aperti reduce-only con trigger).
+def format_positions_message(
+    clearinghouse_state: dict,
+    open_orders: list,
+    mids: dict,
+    spot_state: dict | None = None,
+    spot_meta: dict | None = None,
+) -> str:
+    """Risposta al comando /positions: posizioni PERPS aperte (con leva) con
+    entry vs prezzo attuale, PnL, prezzo di liquidazione ed eventuali
+    stop/TP collegati (dedotti dagli ordini aperti reduce-only con
+    trigger), seguite -- se spot_state e' passato -- da un blocco separato
+    "Saldi spot" (vedi format_spot_balances_block): su Hyperliquid perps e
+    spot sono due conti/saldi distinti, quindi vengono recuperati con due
+    chiamate diverse e mostrati in due blocchi diversi. spot_meta
+    (spotMeta) e' opzionale e serve solo a valorizzare correttamente i
+    ticker spot che non sono coppie "canoniche" (vedi
+    resolve_spot_mid_key).
+
+    Le posizioni perps il cui valore nozionale stimato e' sotto
+    MIN_POSITION_VALUE_USD_TO_SHOW (vedi get_position_value_usd) vengono
+    considerate "polvere" e omesse -- una posizione di cui NON si riesce a
+    stimare il valore viene invece sempre mostrata, per non rischiare di
+    nascondere qualcosa di rilevante. Il filtro NON si applica ai saldi
+    spot, solo alle posizioni perps.
 
     Lo schema esatto di clearinghouseState/frontendOpenOrders non e'
     verificabile da qui (nessun accesso di rete nel sandbox di sviluppo),
@@ -770,12 +1031,27 @@ def format_positions_message(clearinghouse_state: dict, open_orders: list, mids:
     della posizione siano annidati sotto "position" sia il caso in cui
     siano diretti, e omette in silenzio quello che non riesce a
     interpretare con sicurezza invece di mostrare dati indovinati."""
-    if not isinstance(clearinghouse_state, dict) or not isinstance(clearinghouse_state.get("assetPositions"), list):
-        return "📋 Nessuna posizione trovata (o dati non disponibili al momento)."
+    perps_ok = isinstance(clearinghouse_state, dict) and isinstance(clearinghouse_state.get("assetPositions"), list)
+    all_positions = extract_open_positions(clearinghouse_state) if perps_ok else []
+    positions = [
+        p
+        for p in all_positions
+        if (v := get_position_value_usd(p, mids)) is None or v >= MIN_POSITION_VALUE_USD_TO_SHOW
+    ]
+    hidden_count = len(all_positions) - len(positions)
+    spot_block = format_spot_balances_block(spot_state, mids, spot_meta) if spot_state is not None else None
 
-    positions = extract_open_positions(clearinghouse_state)
     if not positions:
-        return "📋 Nessuna posizione aperta al momento."
+        if not perps_ok:
+            perps_block = "📋 Nessuna posizione trovata (o dati non disponibili al momento)."
+        elif hidden_count:
+            perps_block = (
+                f"📋 Nessuna posizione aperta sopra i {MIN_POSITION_VALUE_USD_TO_SHOW:g} USDC "
+                f"({hidden_count} posizione/i sotto soglia non mostrata/e)."
+            )
+        else:
+            perps_block = "📋 Nessuna posizione aperta al momento."
+        return f"{perps_block}\n\n{spot_block}" if spot_block else perps_block
 
     orders_by_coin = defaultdict(list)
     for o in open_orders:
@@ -869,6 +1145,14 @@ def format_positions_message(clearinghouse_state: dict, open_orders: list, mids:
 
         blocks.append("\n".join(lines))
 
+    if hidden_count:
+        blocks.append(
+            f"({hidden_count} posizione/i sotto i {MIN_POSITION_VALUE_USD_TO_SHOW:g} USDC non mostrata/e)"
+        )
+
+    if spot_block:
+        blocks.append(spot_block)
+
     return "\n\n".join(blocks)
 
 
@@ -933,6 +1217,12 @@ def main() -> int:
     alert_repeat_every_n_runs = max(
         1, int(os.environ.get("ALERT_REPEAT_EVERY_N_RUNS", DEFAULT_ALERT_REPEAT_EVERY_N_RUNS))
     )
+    alert_urgent_deviation_pct = float(
+        os.environ.get("ALERT_URGENT_DEVIATION_PCT", DEFAULT_ALERT_URGENT_DEVIATION_PCT)
+    )
+    positions_recap_interval_hours = float(
+        os.environ.get("POSITIONS_RECAP_INTERVAL_HOURS", DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS)
+    )
 
     now_ms = int(time.time() * 1000)
     state = load_state(state_file)
@@ -953,6 +1243,10 @@ def main() -> int:
     # sotto) e rimossa (via on_success) non appena la notifica scatta.
     price_alerts = state.get("price_alerts", [])
     next_alert_id = int(state.get("next_alert_id", 1) or 1)
+    # Timestamp (ms) dell'ultimo riepilogo posizioni automatico mandato
+    # (vedi POSITIONS_RECAP_INTERVAL_HOURS piu' sotto). None -> nessuno
+    # ancora mandato, se ne manda uno subito per stabilire la base.
+    last_positions_recap_ms = state.get("last_positions_recap_ms")
 
     # Cache dei prezzi mid: recuperati dalla rete solo se effettivamente
     # serve (un comando /twap o /positions, o un alert attivo), mai in
@@ -975,13 +1269,43 @@ def main() -> int:
             positions_state_cache = fetch_clearinghouse_state(wallet)
         return positions_state_cache
 
+    # Cache dello stato spot (spotClearinghouseState): conto separato dai
+    # perps su Hyperliquid, recuperato dalla rete solo se serve (comando
+    # /positions).
+    spot_state_cache = None
+
+    def get_spot_state() -> dict:
+        nonlocal spot_state_cache
+        if spot_state_cache is None:
+            spot_state_cache = fetch_spot_state(wallet)
+        return spot_state_cache
+
+    # Cache dei metadati spot (spotMeta): serve solo per risolvere un
+    # ticker spot alla chiave usata per lui in allMids (vedi
+    # resolve_spot_mid_key), quindi si recupera dalla rete solo se un
+    # ticker non si trova direttamente in allMids (es. /alert su un ticker
+    # spot non "canonico").
+    spot_meta_cache = None
+
+    def get_spot_meta() -> dict:
+        nonlocal spot_meta_cache
+        if spot_meta_cache is None:
+            spot_meta_cache = fetch_spot_meta()
+        return spot_meta_cache
+
     def try_create_alert(args_text: str) -> str:
         """Interpreta args_text come "<COIN> <sopra|sotto> <VALORE|VALORE%>"
         e, se valido, aggiunge l'alert a price_alerts. Funziona per QUALSIASI
-        coin con un prezzo su Hyperliquid (non solo quelle con una posizione
-        aperta): la percentuale e' calcolata rispetto al prezzo attuale
-        (allMids) nel momento in cui l'alert viene creato. Ritorna il testo
-        di conferma o dell'errore da rimandare all'utente."""
+        coin con un prezzo su Hyperliquid, sia PERPS che SPOT (non solo
+        quelle con una posizione aperta): la percentuale e' calcolata
+        rispetto al prezzo attuale (allMids) nel momento in cui l'alert
+        viene creato. Per i ticker spot non "canonici" allMids non e'
+        indicizzato per ticker (vedi resolve_spot_mid_key): se il ticker
+        non si trova direttamente si prova a risolverlo via spotMeta, e la
+        chiave risolta ("mids_key") viene salvata sull'alert cosi' anche i
+        controlli successivi (vedi il loop degli alert in main()) sanno
+        dove cercare il prezzo. Ritorna il testo di conferma o dell'errore
+        da rimandare all'utente."""
         nonlocal next_alert_id
         try:
             coin, direction, value, is_percent = parse_price_alert_command(args_text)
@@ -989,12 +1313,21 @@ def main() -> int:
             return f"⚠️ {e}"
 
         mids_now = get_mids()
+        mids_key = coin
+        if coin not in mids_now:
+            resolved = resolve_spot_mid_key(coin, get_spot_meta())
+            if resolved is not None and resolved in mids_now:
+                mids_key = resolved
+
         pct = None
         ref_price = None
         if is_percent:
-            base_raw = mids_now.get(coin)
+            base_raw = mids_now.get(mids_key)
             if base_raw is None:
-                return f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid. Controlla il ticker."
+                return (
+                    f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid "
+                    f"(ne' perps ne' spot). Controlla il ticker."
+                )
             try:
                 ref_price = float(base_raw)
             except (TypeError, ValueError):
@@ -1002,13 +1335,17 @@ def main() -> int:
             pct = value
             price = ref_price * (1 - value / 100) if direction == "below" else ref_price * (1 + value / 100)
         else:
-            if mids_now and coin not in mids_now:
-                return f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid. Controlla il ticker."
+            if mids_now and mids_key not in mids_now:
+                return (
+                    f"⚠️ Coin '{coin}' non trovata tra i prezzi correnti Hyperliquid "
+                    f"(ne' perps ne' spot). Controlla il ticker."
+                )
             price = value
 
         alert = {
             "id": next_alert_id,
             "coin": coin,
+            "mids_key": mids_key,
             "direction": direction,
             "price": price,
             "created_ms": now_ms,
@@ -1069,7 +1406,9 @@ def main() -> int:
         for tid_str, record in twap_records_by_id.items():
             if tid_str in known_twap_ids:
                 continue
-            outgoing.append({"text": format_new_twap_message(record), "on_success": make_new_twap_cb(tid_str)})
+            outgoing.append(
+                {"text": format_new_twap_message(record), "on_success": make_new_twap_cb(tid_str), "kind": "orders"}
+            )
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -1121,7 +1460,9 @@ def main() -> int:
         for f in regular_new:
             by_oid[f.get("oid")].append(f)
         for oid, group in by_oid.items():
-            outgoing.append({"text": format_order_message(group), "on_success": make_regular_cb(group)})
+            outgoing.append(
+                {"text": format_order_message(group), "on_success": make_regular_cb(group), "kind": "orders"}
+            )
 
     # --- Slice TWAP: accumulo silenzioso ad ogni controllo (nessun invio
     # automatico -- lo stato cumulato si consulta a richiesta con /twap) ---
@@ -1173,6 +1514,12 @@ def main() -> int:
             alert["runs_since_notify"] = 0
         return cb
 
+    def make_positions_recap_cb():
+        def cb():
+            nonlocal last_positions_recap_ms
+            last_positions_recap_ms = now_ms
+        return cb
+
     # --- Alert di prezzo: confronto col prezzo attuale (allMids, una sola
     # chiamata per tutti gli alert) solo se ce n'e' almeno uno attivo.
     # Comportamento:
@@ -1198,7 +1545,12 @@ def main() -> int:
         mids_for_alerts = get_mids()
         for alert in price_alerts:
             coin = alert.get("coin")
-            price_raw = mids_for_alerts.get(coin)
+            # "mids_key" e' la chiave risolta in try_create_alert (puo' differire
+            # da "coin" per i ticker spot non "canonici" -- vedi
+            # resolve_spot_mid_key); gli alert creati prima di questa modifica non
+            # ce l'hanno salvata, quindi si ricade su "coin" per compatibilita'.
+            mids_key = alert.get("mids_key") or coin
+            price_raw = mids_for_alerts.get(mids_key)
             if price_raw is None:
                 continue  # coin non presente in allMids: si riprova al prossimo giro
             try:
@@ -1220,6 +1572,7 @@ def main() -> int:
                         {
                             "text": format_alert_cleared_message(alert, current_price, "position_closed"),
                             "on_success": make_alert_remove_cb(alert.get("id")),
+                            "kind": "alerts",
                         }
                     )
                 elif not condition_met:
@@ -1227,11 +1580,19 @@ def main() -> int:
                         {
                             "text": format_alert_cleared_message(alert, current_price, "recovered"),
                             "on_success": make_alert_rearm_cb(alert),
+                            "kind": "alerts",
                         }
                     )
                 else:
+                    # Se il prezzo si e' allontanato dalla soglia di piu' di
+                    # alert_urgent_deviation_pct, la situazione e' considerata
+                    # urgente e il throttle a N giri viene bypassato del
+                    # tutto: si notifica ad ogni giro finche' resta cosi'.
+                    deviation_pct = (abs(current_price - threshold) / abs(threshold) * 100) if threshold else None
+                    urgent = deviation_pct is not None and deviation_pct > alert_urgent_deviation_pct
+
                     runs_since_notify = alert.get("runs_since_notify", 0) + 1
-                    if runs_since_notify >= alert_repeat_every_n_runs:
+                    if urgent or runs_since_notify >= alert_repeat_every_n_runs:
                         outgoing.append(
                             {
                                 "text": format_alert_triggered_message(
@@ -1240,8 +1601,11 @@ def main() -> int:
                                     position,
                                     repeated=True,
                                     repeat_every_n_runs=alert_repeat_every_n_runs,
+                                    urgent=urgent,
+                                    urgent_deviation_pct=alert_urgent_deviation_pct,
                                 ),
                                 "on_success": make_alert_reset_counter_cb(alert),
+                                "kind": "alerts",
                             }
                         )
                     else:
@@ -1259,6 +1623,7 @@ def main() -> int:
                         {
                             "text": format_alert_triggered_message(alert, current_price, position, repeated=False),
                             "on_success": make_alert_mark_active_cb(alert),
+                            "kind": "alerts",
                         }
                     )
                 else:
@@ -1266,25 +1631,50 @@ def main() -> int:
                         {
                             "text": format_alert_triggered_message(alert, current_price, None, repeated=False),
                             "on_success": make_alert_remove_cb(alert.get("id")),
+                            "kind": "alerts",
                         }
                     )
 
-    # --- Invio delle notifiche automatiche: intestazione di aggiornamento
-    # (solo se c'e' davvero qualcosa da mandare in questo giro) seguita da
-    # tutti i messaggi accodati, in ordine. ---
-    if outgoing:
-        try:
-            send_telegram_message(
-                bot_token, chat_id, format_update_header(now_ms), dry_run=dry_run, separator=UPDATE_HEADER_BAR
-            )
-        except Exception as e:
-            # L'intestazione e' solo cosmetica: un suo eventuale fallimento
-            # non deve bloccare l'invio delle notifiche vere e proprie.
-            print(f"AVVISO: impossibile inviare l'intestazione di aggiornamento: {e}", file=sys.stderr)
+    # --- Riepilogo posizioni automatico: stesso contenuto della risposta a
+    # /positions (posizioni perps sopra la soglia "polvere" + saldi spot),
+    # mandato da solo ogni POSITIONS_RECAP_INTERVAL_HOURS ore (variabile
+    # d'ambiente, default 4) senza doverlo chiedere a mano. Le chiamate di
+    # rete necessarie avvengono solo quando e' davvero il momento di
+    # mandarlo. Se non e' mai stato mandato (prima volta che lo stato ha
+    # questo campo) se ne manda uno subito, per stabilire la base. La
+    # mutazione dell'ultimo timestamp avviene solo via on_success, stessa
+    # logica di retry-al-prossimo-giro del resto. ---
+    positions_recap_interval_ms = positions_recap_interval_hours * 3600 * 1000
+    if last_positions_recap_ms is None or (now_ms - last_positions_recap_ms) >= positions_recap_interval_ms:
+        positions_recap_text = format_positions_message(
+            get_positions_state(),
+            fetch_open_orders(wallet),
+            get_mids(),
+            spot_state=get_spot_state(),
+            spot_meta=get_spot_meta(),
+        )
+        outgoing.append(
+            {
+                "text": (
+                    f"🕓 Riepilogo posizioni automatico (ogni {positions_recap_interval_hours:g}h):\n\n"
+                    f"{positions_recap_text}"
+                ),
+                "on_success": make_positions_recap_cb(),
+                "kind": "positions",
+            }
+        )
 
+    # --- Invio delle notifiche automatiche: ognuna con la propria
+    # intestazione "NUOVO AGGIORNAMENTO", colorata per categoria (vedi
+    # UPDATE_HEADER_BAR_BY_KIND) cosi' ordini/fill/nuovi TWAP (rosso),
+    # alert di prezzo (arancione) e riepilogo posizioni (verde) si
+    # riconoscono a colpo d'occhio anche senza leggere il testo. ---
+    if outgoing:
         for item in outgoing:
+            bar = UPDATE_HEADER_BAR_BY_KIND.get(item.get("kind"), UPDATE_HEADER_BAR_ORDERS)
+            separator = format_update_header(now_ms, bar)
             try:
-                send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run)
+                send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run, separator=separator)
             except Exception as e:
                 print(f"ERRORE invio Telegram: {e}", file=sys.stderr)
                 continue
@@ -1336,7 +1726,9 @@ def main() -> int:
                     elif command == "positions":
                         ch_state = get_positions_state()
                         open_orders = fetch_open_orders(wallet)
-                        reply_text = format_positions_message(ch_state, open_orders, get_mids())
+                        reply_text = format_positions_message(
+                            ch_state, open_orders, get_mids(), spot_state=get_spot_state(), spot_meta=get_spot_meta()
+                        )
                     elif command == "alert":
                         reply_text = try_create_alert(command_args(text))
                     elif command == "newalert":
@@ -1405,6 +1797,7 @@ def main() -> int:
             "last_update_id": new_last_update_id,
             "price_alerts": price_alerts,
             "next_alert_id": next_alert_id,
+            "last_positions_recap_ms": last_positions_recap_ms,
         },
     )
     return 0
