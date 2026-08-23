@@ -331,8 +331,8 @@
     "2137164"
   ],
   "last_positions_recap_ms": 1787513728644,
-  "last_time_ms": 1787522363031,
-  "last_update_id": 603631109,
+  "last_time_ms": 1787522440024,
+  "last_update_id": 603631110,
   "next_alert_id": 19,
   "price_alerts": [
     {
@@ -909,14 +909,14 @@
     906378038478838,
     1083293215479797,
     897263439448063,
-    636078217279575
+    669296132195517
   ],
   "twap_progress": {
     "2115076": {
       "coin": "BTC",
-      "executed_sz": 0.05068000000000028,
-      "last_ms": 1787521540025,
-      "notional": 3877.52442,
+      "executed_sz": 0.05084000000000028,
+      "last_ms": 1787522440024,
+      "notional": 3890.0060200000003,
       "pending_count": 0,
       "pending_notional": 0.0,
       "pending_sz": 0.0,
