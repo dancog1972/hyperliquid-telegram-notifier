@@ -36,19 +36,22 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 effort endpoint storico TWAP non vengono mai
                                 mostrati uno per uno (rischio di superare il
                                 limite di lunghezza di Telegram).
-  /positions                   Posizioni PERPS aperte (sopra i
-                                MIN_POSITION_VALUE_USD_TO_SHOW USDC di
-                                valore nozionale, default 10 -- quelle
-                                sotto sono considerate "polvere" e omesse,
-                                con un conteggio di quante non sono
+  /positions                   Posizioni PERPS aperte, ordinate per valore
+                                nozionale USDC DECRESCENTE (sopra i
+                                MIN_VALUE_USD_TO_SHOW USDC, default 10 --
+                                quelle sotto sono considerate "polvere" e
+                                omesse, con un conteggio di quante non sono
                                 mostrate): size e direzione, entry vs
                                 prezzo attuale, PnL non realizzato, prezzo
                                 di liquidazione ed eventuali ordini di
                                 stop/take-profit collegati -- seguite da un
                                 blocco separato con i saldi SPOT non nulli
                                 (conto distinto dai perps su Hyperliquid,
-                                NON filtrato per importo, con controvalore
-                                in USDC quando reperibile).
+                                anch'essi filtrati sotto i 10 USDC di
+                                controvalore stimato, con conteggio di
+                                quanti nascosti -- un saldo di cui non si
+                                riesce a stimare il controvalore resta
+                                sempre visibile).
   /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
                                 Imposta un alert di prezzo per QUALSIASI
                                 coin quotata su Hyperliquid, sia PERPS che
@@ -70,7 +73,10 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 gia' pronto su Telegram) e basta scrivere
                                 "<COIN> <sopra|sotto> <VALORE|VALORE%>" in
                                 risposta, senza dover ricordare /alert.
-  /alerts                       Elenca gli alert di prezzo attivi.
+  /alerts                       Elenca gli alert di prezzo attivi, col
+                                prezzo attuale del token accanto a ognuno
+                                quando disponibile (stessa risoluzione
+                                spot di /alert).
   /delalert <id>                Rimuove un alert (l'id si vede con /alerts).
                                 La conferma include anche l'elenco
                                 aggiornato degli alert rimasti attivi.
@@ -581,16 +587,18 @@ def extract_open_positions(clearinghouse_state: dict) -> list:
     return positions
 
 
-# Sotto questa soglia (in USDC di valore nozionale) una posizione perps
-# viene considerata "polvere" e omessa dal blocco "Posizioni aperte" di
-# /positions, per non intasare il messaggio con residui irrilevanti.
-MIN_POSITION_VALUE_USD_TO_SHOW = 10.0
+# Sotto questa soglia (in USDC di controvalore stimato) sia una posizione
+# perps sia un saldo spot vengono considerati "polvere" e omessi dai
+# rispettivi blocchi ("Posizioni aperte" e "Saldi spot") di /positions e
+# del riepilogo automatico, per non intasare il messaggio con residui
+# irrilevanti.
+MIN_VALUE_USD_TO_SHOW = 10.0
 
 
 def get_position_value_usd(pos: dict, mids: dict):
     """Valore nozionale approssimativo (in USDC) di una posizione perps,
     usato per il filtro "polvere" di /positions (vedi
-    MIN_POSITION_VALUE_USD_TO_SHOW). Prova, in ordine: il campo
+    MIN_VALUE_USD_TO_SHOW). Prova, in ordine: il campo
     "positionValue" gia' fornito da clearinghouseState (il piu'
     affidabile); altrimenti size * prezzo attuale (allMids); altrimenti
     size * entry price. Ritorna None se nessuno dei tre e' disponibile --
@@ -652,29 +660,50 @@ def format_spot_balances_block(spot_state: dict, mids: dict, spot_meta: dict | N
     controvalore in USDC viene calcolato con get_price_for_coin (che sa
     risolvere anche i ticker spot tramite spot_meta, se passato -- vedi
     resolve_spot_mid_key); se non si trova alcun prezzo si mostra solo la
-    quantita', senza inventare un valore. Nessun filtro per importo qui
-    (il filtro "polvere" sotto una certa soglia si applica solo alle
-    POSIZIONI perps, vedi MIN_POSITION_VALUE_USD_TO_SHOW in
-    format_positions_message). Ritorna None se non ci sono saldi spot da
-    mostrare."""
+    quantita', senza inventare un valore.
+
+    Un saldo il cui controvalore stimato e' sotto MIN_VALUE_USD_TO_SHOW
+    (stessa soglia usata per le posizioni perps, vedi
+    format_positions_message) viene considerato "polvere" e omesso. Un
+    saldo di cui NON si riesce a stimare il controvalore (prezzo non
+    risolvibile) viene invece sempre mostrato, per non rischiare di
+    nascondere qualcosa di rilevante solo perche' il prezzo non si trova.
+    Ritorna None se, dopo il filtro, non resta nessun saldo da mostrare."""
     balances = extract_spot_balances(spot_state)
     if not balances:
         return None
     lines = ["💰 Saldi spot:"]
+    hidden_count = 0
     for b in sorted(balances, key=lambda x: x["coin"]):
         coin = b["coin"]
         total = b["total"]
         if coin == "USDC":
+            if total < MIN_VALUE_USD_TO_SHOW:
+                hidden_count += 1
+                continue
             lines.append(f"— {coin}: {total:g} (liquidità)")
             continue
         price = get_price_for_coin(coin, mids, spot_meta)
+        if price is not None and total * price < MIN_VALUE_USD_TO_SHOW:
+            hidden_count += 1
+            continue
         value_txt = f" (~{total * price:g} USDC)" if price is not None else ""
         lines.append(f"— {coin}: {total:g}{value_txt}")
+    if len(lines) == 1:  # solo l'intestazione "💰 Saldi spot:" -> nulla sopra soglia
+        return None
+    if hidden_count:
+        lines.append(f"({hidden_count} saldo/i sotto i {MIN_VALUE_USD_TO_SHOW:g} USDC non mostrato/i)")
     return "\n".join(lines)
 
 
-def format_alerts_list_message(alerts: list) -> str:
-    """Risposta al comando /alerts: elenco degli alert di prezzo attivi."""
+def format_alerts_list_message(alerts: list, mids: dict | None = None, spot_meta: dict | None = None) -> str:
+    """Risposta al comando /alerts: elenco degli alert di prezzo attivi.
+    Se mids e' passato, ogni riga include anche il prezzo attuale del
+    token (usando la "mids_key" gia' risolta salvata sull'alert -- vedi
+    try_create_alert/resolve_spot_mid_key -- con fallback su spot_meta per
+    gli alert creati prima di questa modifica, che non ce l'hanno
+    salvata). Se il prezzo attuale non si riesce a determinare, la riga
+    resta senza quell'informazione invece di inventare un valore."""
     if not alerts:
         return (
             "🔔 Nessun alert di prezzo impostato.\n"
@@ -695,7 +724,13 @@ def format_alerts_list_message(alerts: list) -> str:
             except (TypeError, ValueError):
                 pct_txt = f" ({a['pct']}%)"
         stato_txt = " 🔴 IN ALLARME" if a.get("triggered") else ""
-        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}{stato_txt}")
+        current_txt = ""
+        if mids:
+            mids_key = a.get("mids_key") or a.get("coin")
+            current_price = get_price_for_coin(mids_key, mids, spot_meta) if mids_key else None
+            if current_price is not None:
+                current_txt = f" (attuale: {current_price:g})"
+        lines.append(f"— id {a.get('id')}: {a.get('coin')} {verso} {price_txt}{pct_txt}{current_txt}{stato_txt}")
     lines.append("\nPer rimuoverne uno: /delalert <id>")
     return "\n".join(lines)
 
@@ -1019,11 +1054,16 @@ def format_positions_message(
     resolve_spot_mid_key).
 
     Le posizioni perps il cui valore nozionale stimato e' sotto
-    MIN_POSITION_VALUE_USD_TO_SHOW (vedi get_position_value_usd) vengono
+    MIN_VALUE_USD_TO_SHOW (vedi get_position_value_usd) vengono
     considerate "polvere" e omesse -- una posizione di cui NON si riesce a
     stimare il valore viene invece sempre mostrata, per non rischiare di
-    nascondere qualcosa di rilevante. Il filtro NON si applica ai saldi
-    spot, solo alle posizioni perps.
+    nascondere qualcosa di rilevante. Lo stesso filtro (stessa soglia) si
+    applica anche ai saldi spot (vedi format_spot_balances_block): un
+    saldo sotto soglia viene omesso, uno di cui non si riesce a stimare il
+    controvalore resta sempre visibile. Le posizioni mostrate sono
+    ordinate per valore nozionale USDC DECRESCENTE (le piu' grandi prima);
+    quelle di cui non si riesce a stimare il valore vanno in fondo,
+    perche' non confrontabili con le altre.
 
     Lo schema esatto di clearinghouseState/frontendOpenOrders non e'
     verificabile da qui (nessun accesso di rete nel sandbox di sviluppo),
@@ -1033,11 +1073,13 @@ def format_positions_message(
     interpretare con sicurezza invece di mostrare dati indovinati."""
     perps_ok = isinstance(clearinghouse_state, dict) and isinstance(clearinghouse_state.get("assetPositions"), list)
     all_positions = extract_open_positions(clearinghouse_state) if perps_ok else []
-    positions = [
-        p
-        for p in all_positions
-        if (v := get_position_value_usd(p, mids)) is None or v >= MIN_POSITION_VALUE_USD_TO_SHOW
-    ]
+    positions_with_value = [(p, get_position_value_usd(p, mids)) for p in all_positions]
+    positions_with_value = [(p, v) for p, v in positions_with_value if v is None or v >= MIN_VALUE_USD_TO_SHOW]
+    # Valore nozionale USDC decrescente; le posizioni di cui non si riesce a
+    # stimare il valore vanno in fondo (non essendo confrontabili con le
+    # altre, ma senza per questo perderle -- restano comunque nell'elenco).
+    positions_with_value.sort(key=lambda pv: (pv[1] is None, -(pv[1] or 0)))
+    positions = [p for p, _ in positions_with_value]
     hidden_count = len(all_positions) - len(positions)
     spot_block = format_spot_balances_block(spot_state, mids, spot_meta) if spot_state is not None else None
 
@@ -1046,7 +1088,7 @@ def format_positions_message(
             perps_block = "📋 Nessuna posizione trovata (o dati non disponibili al momento)."
         elif hidden_count:
             perps_block = (
-                f"📋 Nessuna posizione aperta sopra i {MIN_POSITION_VALUE_USD_TO_SHOW:g} USDC "
+                f"📋 Nessuna posizione aperta sopra i {MIN_VALUE_USD_TO_SHOW:g} USDC "
                 f"({hidden_count} posizione/i sotto soglia non mostrata/e)."
             )
         else:
@@ -1147,7 +1189,7 @@ def format_positions_message(
 
     if hidden_count:
         blocks.append(
-            f"({hidden_count} posizione/i sotto i {MIN_POSITION_VALUE_USD_TO_SHOW:g} USDC non mostrata/e)"
+            f"({hidden_count} posizione/i sotto i {MIN_VALUE_USD_TO_SHOW:g} USDC non mostrata/e)"
         )
 
     if spot_block:
@@ -1361,7 +1403,7 @@ def main() -> int:
         confirmation = f"🔔 Alert impostato: ti avviso quando {coin} {verso} {price:g}{extra} (id {alert['id']})."
         # L'utente vuole rivedere subito l'elenco aggiornato ogni volta che
         # un alert viene aggiunto o modificato, non solo con /alerts.
-        return f"{confirmation}\n\n{format_alerts_list_message(price_alerts)}"
+        return f"{confirmation}\n\n{format_alerts_list_message(price_alerts, mids_now, get_spot_meta())}"
 
     # Un'unica chiamata di rete (best-effort) usata sia per rilevare TWAP
     # appena avviati sia, piu' sotto, come sorgente per la % di
@@ -1739,7 +1781,7 @@ def main() -> int:
                         )
                         reply_markup_override = ALERT_PROMPT_REPLY_MARKUP
                     elif command == "alerts":
-                        reply_text = format_alerts_list_message(price_alerts)
+                        reply_text = format_alerts_list_message(price_alerts, get_mids(), get_spot_meta())
                     elif command in ("delalert", "rmalert"):
                         args_text = command_args(text).strip()
                         try:
@@ -1751,7 +1793,8 @@ def main() -> int:
                             price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
                             if len(price_alerts) < before:
                                 reply_text = (
-                                    f"🗑️ Alert {alert_id} rimosso.\n\n{format_alerts_list_message(price_alerts)}"
+                                    f"🗑️ Alert {alert_id} rimosso.\n\n"
+                                    f"{format_alerts_list_message(price_alerts, get_mids(), get_spot_meta())}"
                                 )
                             else:
                                 reply_text = f"⚠️ Nessun alert trovato con id {alert_id}."
