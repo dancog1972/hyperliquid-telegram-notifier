@@ -364,7 +364,8 @@
       "id": 8,
       "mids_key": "BTC",
       "price": 79000.0,
-      "triggered": false
+      "runs_since_notify": 0,
+      "triggered": true
     }
   ],
   "seen_tids": [
