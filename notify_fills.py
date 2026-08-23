@@ -1047,6 +1047,7 @@ def main() -> int:
     new_last_update_id = last_update_id
     if bot_token:
         updates = fetch_telegram_updates(bot_token, last_update_id + 1)
+        print(f"Comandi Telegram: {len(updates)} update ricevuti (offset richiesto: {last_update_id + 1}).")
         for update in updates:
             update_id = update.get("update_id")
             if isinstance(update_id, int) and update_id > new_last_update_id:
@@ -1055,64 +1056,80 @@ def main() -> int:
             message = update.get("message") or {}
             msg_chat_id = (message.get("chat") or {}).get("id")
             if msg_chat_id is None or str(msg_chat_id) != str(chat_id):
+                print(f"  update {update_id}: ignorato (chat {msg_chat_id} diversa da quella configurata).")
                 continue  # ignora comandi da chat diverse da quella configurata
 
             text = message.get("text")
             reply_to = message.get("reply_to_message") or {}
             reply_markup_override = None
+            reply_text = None
 
-            if isinstance(reply_to, dict) and ALERT_PROMPT_MARKER in (reply_to.get("text") or ""):
-                # Risposta (Telegram "reply") al messaggio-prompt mandato dal
-                # pulsante /newalert: il testo e' direttamente "<coin>
-                # <direzione> <valore>", senza comando iniziale da togliere.
-                reply_text = try_create_alert((text or "").strip())
-            else:
-                command = normalize_command(text)
-                if command == "twap":
-                    reply_text = format_twap_status_message(twap_progress, twap_records_by_id, get_mids())
-                elif command == "positions":
-                    ch_state = get_positions_state()
-                    open_orders = fetch_open_orders(wallet)
-                    reply_text = format_positions_message(ch_state, open_orders, get_mids())
-                elif command == "alert":
-                    reply_text = try_create_alert(command_args(text))
-                elif command == "newalert":
-                    reply_text = (
-                        f"{ALERT_PROMPT_MARKER}: rispondi a questo messaggio (usa 'Rispondi'/'Reply' su "
-                        f"Telegram) con <COIN> <sopra|sotto> <VALORE|VALORE%>\n"
-                        f"Esempi: BTC sotto 65000  —  BTC sotto 5%"
-                    )
-                    reply_markup_override = ALERT_PROMPT_REPLY_MARKUP
-                elif command == "alerts":
-                    reply_text = format_alerts_list_message(price_alerts)
-                elif command in ("delalert", "rmalert"):
-                    args_text = command_args(text).strip()
-                    try:
-                        alert_id = int(args_text)
-                    except ValueError:
-                        reply_text = "⚠️ Usa: /delalert <id> (vedi gli id con /alerts)"
-                    else:
-                        before = len(price_alerts)
-                        price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
-                        reply_text = (
-                            f"🗑️ Alert {alert_id} rimosso."
-                            if len(price_alerts) < before
-                            else f"⚠️ Nessun alert trovato con id {alert_id}."
-                        )
-                elif command == "start":
-                    # Solo per mostrare/ripristinare la tastiera con i pulsanti
-                    # su una chat che non ha ancora ricevuto nessun messaggio.
-                    reply_text = (
-                        "👋 Bot Hyperliquid attivo. Usa i pulsanti qui sotto (o scrivi i comandi):\n"
-                        "/twap — stato dei TWAP\n"
-                        "/positions — posizioni aperte e stop\n"
-                        "/alerts — alert di prezzo attivi\n"
-                        "/newalert — crea un alert in modo guidato\n"
-                        "/alert <COIN> <sopra|sotto> <VALORE|VALORE%> — imposta un alert direttamente\n"
-                        "/delalert <id> — rimuove un alert"
-                    )
+            # Tutta la logica che determina la risposta e' avvolta in un
+            # try/except: un eventuale bug in uno dei comandi non deve far
+            # crashare l'intero giro (che lascerebbe l'offset non salvato e
+            # farebbe ripetere lo stesso errore ad ogni run) ne' lasciare
+            # l'utente senza nessuna risposta -- meglio un messaggio di
+            # errore visibile (e nei log) che silenzio totale.
+            try:
+                if isinstance(reply_to, dict) and ALERT_PROMPT_MARKER in (reply_to.get("text") or ""):
+                    # Risposta (Telegram "reply") al messaggio-prompt mandato
+                    # dal pulsante /newalert: il testo e' direttamente
+                    # "<coin> <direzione> <valore>", senza comando iniziale.
+                    print(f"  update {update_id}: risposta al prompt /newalert -> '{text}'")
+                    reply_text = try_create_alert((text or "").strip())
                 else:
-                    continue
+                    command = normalize_command(text)
+                    print(f"  update {update_id}: testo='{text}' comando riconosciuto='{command or '(nessuno)'}'")
+                    if command == "twap":
+                        reply_text = format_twap_status_message(twap_progress, twap_records_by_id, get_mids())
+                    elif command == "positions":
+                        ch_state = get_positions_state()
+                        open_orders = fetch_open_orders(wallet)
+                        reply_text = format_positions_message(ch_state, open_orders, get_mids())
+                    elif command == "alert":
+                        reply_text = try_create_alert(command_args(text))
+                    elif command == "newalert":
+                        reply_text = (
+                            f"{ALERT_PROMPT_MARKER}: rispondi a questo messaggio (usa 'Rispondi'/'Reply' su "
+                            f"Telegram) con <COIN> <sopra|sotto> <VALORE|VALORE%>\n"
+                            f"Esempi: BTC sotto 65000  —  BTC sotto 5%"
+                        )
+                        reply_markup_override = ALERT_PROMPT_REPLY_MARKUP
+                    elif command == "alerts":
+                        reply_text = format_alerts_list_message(price_alerts)
+                    elif command in ("delalert", "rmalert"):
+                        args_text = command_args(text).strip()
+                        try:
+                            alert_id = int(args_text)
+                        except ValueError:
+                            reply_text = "⚠️ Usa: /delalert <id> (vedi gli id con /alerts)"
+                        else:
+                            before = len(price_alerts)
+                            price_alerts[:] = [a for a in price_alerts if a.get("id") != alert_id]
+                            reply_text = (
+                                f"🗑️ Alert {alert_id} rimosso."
+                                if len(price_alerts) < before
+                                else f"⚠️ Nessun alert trovato con id {alert_id}."
+                            )
+                    elif command == "start":
+                        # Solo per mostrare/ripristinare la tastiera con i
+                        # pulsanti su una chat senza ancora nessun messaggio.
+                        reply_text = (
+                            "👋 Bot Hyperliquid attivo. Usa i pulsanti qui sotto (o scrivi i comandi):\n"
+                            "/twap — stato dei TWAP\n"
+                            "/positions — posizioni aperte e stop\n"
+                            "/alerts — alert di prezzo attivi\n"
+                            "/newalert — crea un alert in modo guidato\n"
+                            "/alert <COIN> <sopra|sotto> <VALORE|VALORE%> — imposta un alert direttamente\n"
+                            "/delalert <id> — rimuove un alert"
+                        )
+                    else:
+                        continue
+            except Exception as e:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                reply_text = f"⚠️ Errore interno gestendo il comando (controlla i log del workflow): {e}"
+                reply_markup_override = None
 
             try:
                 if reply_markup_override is not None:
