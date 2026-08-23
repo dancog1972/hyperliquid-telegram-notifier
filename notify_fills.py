@@ -1017,19 +1017,31 @@ def main() -> int:
         # deduplicati poi tramite seen_tids.
         start_time_ms = last_time_ms - 1000
 
-    fills = fetch_fills(wallet, start_time_ms, now_ms)
-    twap_fills = fetch_twap_slice_fills(wallet, start_time_ms, now_ms)
-    all_fills = fills + twap_fills
-    all_fills.sort(key=lambda f: (f.get("time", 0), f.get("tid", 0)))
-
-    new_fills = [f for f in all_fills if f.get("tid") not in seen_tids]
-    print(f"Trovati {len(all_fills)} fill nell'intervallo, {len(new_fills)} nuovi.")
-
+    # Stato di default (nessun fill nuovo): se la chiamata sotto fallisce
+    # (es. errore transitorio dell'API di Hyperliquid -- piu' probabile con
+    # un controllo molto frequente) NON deve far crashare tutto lo script,
+    # altrimenti anche la gestione dei comandi Telegram piu' sotto (/twap,
+    # /positions, ecc.) non verrebbe mai raggiunta in quel giro. Si salta
+    # solo il rilevamento fill di questo giro (si riprova al prossimo,
+    # nessun dato perso grazie alla finestra continua) mentre il resto
+    # (alert di prezzo, comandi) va avanti comunque con lo stato esistente.
     max_time_seen = last_time_ms or start_time_ms
     latest_tids = list(seen_tids)
+    regular_new = []
+    twap_new = []
+    try:
+        fills = fetch_fills(wallet, start_time_ms, now_ms)
+        twap_fills = fetch_twap_slice_fills(wallet, start_time_ms, now_ms)
+        all_fills = fills + twap_fills
+        all_fills.sort(key=lambda f: (f.get("time", 0), f.get("tid", 0)))
 
-    regular_new = [f for f in new_fills if not f.get("twapId")]
-    twap_new = [f for f in new_fills if f.get("twapId")]
+        new_fills = [f for f in all_fills if f.get("tid") not in seen_tids]
+        print(f"Trovati {len(all_fills)} fill nell'intervallo, {len(new_fills)} nuovi.")
+
+        regular_new = [f for f in new_fills if not f.get("twapId")]
+        twap_new = [f for f in new_fills if f.get("twapId")]
+    except Exception as e:
+        print(f"AVVISO: impossibile recuperare i fill in questo giro (salto, riprovo al prossimo): {e}", file=sys.stderr)
 
     def make_regular_cb(group):
         def cb():
