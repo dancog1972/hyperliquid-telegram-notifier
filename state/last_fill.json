@@ -331,8 +331,8 @@
   ],
   "last_positions_recap_ms": 1787499326176,
   "last_time_ms": 1787513350040,
-  "last_update_id": 603631098,
-  "next_alert_id": 17,
+  "last_update_id": 603631100,
+  "next_alert_id": 18,
   "price_alerts": [
     {
       "coin": "HYPE",
@@ -370,16 +370,6 @@
     },
     {
       "coin": "CAT",
-      "created_ms": 1787501731380,
-      "direction": "below",
-      "id": 12,
-      "mids_key": "@126",
-      "price": 1.4,
-      "runs_since_notify": 0,
-      "triggered": true
-    },
-    {
-      "coin": "CAT",
       "created_ms": 1787501781696,
       "direction": "above",
       "id": 13,
@@ -413,6 +403,15 @@
       "mids_key": "PURR",
       "price": 0.145,
       "triggered": false
+    },
+    {
+      "coin": "CAT",
+      "created_ms": 1787513596476,
+      "direction": "below",
+      "id": 17,
+      "mids_key": "@126",
+      "price": 1.3,
+      "triggered": false
     }
   ],
   "seen_tids": [
@@ -423,8 +422,8 @@
     372388323057140,
     253006491837943,
     383031330655733,
-    932608554671609,
     177428596006393,
+    932608554671609,
     1094390907446774,
     707697211807227,
     292899684281854,
