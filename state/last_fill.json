@@ -330,7 +330,7 @@
     "2136125"
   ],
   "last_time_ms": 1787496610016,
-  "last_update_id": 603631059,
+  "last_update_id": 603631060,
   "next_alert_id": 7,
   "price_alerts": [
     {
@@ -361,7 +361,7 @@
       "direction": "below",
       "id": 6,
       "price": 0.126,
-      "triggered": false
+      "triggered": true
     }
   ],
   "seen_tids": [
