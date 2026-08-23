@@ -330,7 +330,7 @@
     "2136125"
   ],
   "last_positions_recap_ms": 1787499326176,
-  "last_time_ms": 1787499877040,
+  "last_time_ms": 1787500180061,
   "last_update_id": 603631080,
   "next_alert_id": 12,
   "price_alerts": [
@@ -374,19 +374,9 @@
       "mids_key": "BTC",
       "price": 80000.0,
       "triggered": false
-    },
-    {
-      "coin": "CAT",
-      "created_ms": 1787500155446,
-      "direction": "below",
-      "id": 11,
-      "mids_key": "@126",
-      "price": 1.5,
-      "triggered": false
     }
   ],
   "seen_tids": [
-    1082269087198085,
     1115132902458853,
     1111744576761319,
     242475133746664,
@@ -885,7 +875,8 @@
     971896032978939,
     1048716289791996,
     1083293215479797,
-    897263439448063
+    897263439448063,
+    641358843322768
   ],
   "twap_progress": {
     "2115076": {
@@ -1000,9 +991,9 @@
     },
     "2131512": {
       "coin": "PURR",
-      "executed_sz": 14090.0,
-      "last_ms": 1787499460074,
-      "notional": 1405.841356,
+      "executed_sz": 14180.0,
+      "last_ms": 1787500180061,
+      "notional": 1417.6133559999998,
       "pending_count": 1,
       "pending_notional": 11.6656,
       "pending_sz": 92.0,
