@@ -328,14 +328,9 @@
     "2133671",
     "2133792"
   ],
-  "last_time_ms": 1787474395028,
+  "last_time_ms": 1787474890018,
   "next_recap_due_ms": 1787478035474,
   "seen_tids": [
-    412156946788474,
-    358841885800634,
-    1064385284088290,
-    333695274846697,
-    893245507141595,
     297408349894112,
     627924324304354,
     252814337699299,
@@ -796,6 +791,7 @@
     783423680919508,
     541222693107665,
     739204201973720,
+    893245507141595,
     656950521685974,
     1036520264734680,
     430976475226073,
@@ -830,18 +826,22 @@
     971896032978939,
     1048716289791996,
     1083293215479797,
-    897263439448063
+    897263439448063,
+    331823774334816,
+    969993936176302,
+    732506621885992,
+    922296112179761
   ],
   "twap_progress": {
     "2115076": {
       "coin": "BTC",
-      "executed_sz": 0.042260000000000186,
-      "last_ms": 1787473930021,
-      "notional": 3227.0886600000013,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 0.04243000000000019,
+      "last_ms": 1787474890018,
+      "notional": 3240.107600000001,
+      "pending_count": 1,
+      "pending_notional": 13.01894,
+      "pending_sz": 0.00017,
+      "period_start_ms": 1787474890018,
       "side": "A"
     },
     "2115950": {
@@ -978,24 +978,24 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 136393.0,
-      "last_ms": 1787474137010,
-      "notional": 676.0427280000002,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 138610.0,
+      "last_ms": 1787474767004,
+      "notional": 687.6952800000003,
+      "pending_count": 2,
+      "pending_notional": 11.652552,
+      "pending_sz": 2217.0,
+      "period_start_ms": 1787474767004,
       "side": "B"
     },
     "2133792": {
       "coin": "PUMP",
-      "executed_sz": 176311.0,
-      "last_ms": 1787474395028,
-      "notional": 874.213147,
-      "pending_count": 0,
-      "pending_notional": 0.0,
-      "pending_sz": 0.0,
-      "period_start_ms": null,
+      "executed_sz": 178539.0,
+      "last_ms": 1787474845004,
+      "notional": 885.874499,
+      "pending_count": 1,
+      "pending_notional": 11.661351999999999,
+      "pending_sz": 2228.0,
+      "period_start_ms": 1787474845004,
       "side": "B"
     }
   }
