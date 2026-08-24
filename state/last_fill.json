@@ -386,7 +386,7 @@
       "id": 15,
       "mids_key": "PUMP",
       "price": 0.0051,
-      "runs_since_notify": 0,
+      "runs_since_notify": 1,
       "triggered": true
     },
     {
@@ -406,7 +406,7 @@
       "id": 18,
       "mids_key": "@126",
       "price": 1.0,
-      "runs_since_notify": 4,
+      "runs_since_notify": 0,
       "triggered": true
     }
   ],
