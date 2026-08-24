@@ -334,18 +334,9 @@
   ],
   "last_positions_recap_ms": 1787557035503,
   "last_time_ms": 1787561320048,
-  "last_update_id": 603631124,
-  "next_alert_id": 22,
+  "last_update_id": 603631127,
+  "next_alert_id": 23,
   "price_alerts": [
-    {
-      "coin": "HYPE",
-      "created_ms": 1787496524001,
-      "direction": "below",
-      "id": 5,
-      "price": 79.0,
-      "runs_since_notify": 0,
-      "triggered": true
-    },
     {
       "coin": "PURR",
       "created_ms": 1787497832135,
@@ -408,9 +399,19 @@
       "mids_key": "PUMP",
       "price": 0.004,
       "triggered": false
+    },
+    {
+      "coin": "HYPE",
+      "created_ms": 1787561431306,
+      "direction": "below",
+      "id": 22,
+      "mids_key": "HYPE",
+      "price": 76.75,
+      "triggered": false
     }
   ],
   "seen_tids": [
+    513685332975935,
     910827254319971,
     922795549177221,
     1104611871870357,
@@ -909,8 +910,7 @@
     1048716289791996,
     686953673883645,
     623320672786422,
-    713181208414198,
-    513685332975935
+    713181208414198
   ],
   "twap_progress": {
     "2115076": {
