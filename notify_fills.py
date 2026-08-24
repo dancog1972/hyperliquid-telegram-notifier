@@ -128,14 +128,15 @@ scrivere "/start" al bot manda un messaggio di benvenuto che la mostra
 anche a chat vuota.
 
 Ogni notifica AUTOMATICA (fill/nuovi TWAP, alert di prezzo, riepilogo
-posizioni) e' preceduta dalla propria intestazione "NUOVO AGGIORNAMENTO",
-colorata per categoria cosi' si riconoscono a colpo d'occhio anche senza
-leggere il testo (vedi UPDATE_HEADER_BAR_BY_KIND): 🟥 rosso per
-ordini/fill/nuovi TWAP, 🟧 arancione per gli alert di prezzo, 🟩 verde per
-il riepilogo posizioni periodico. Le risposte ai comandi Telegram (es.
-/twap, /positions, /alert) restano invece precedute da una semplice riga
-separatrice neutra, per restare visivamente distinte senza per questo
-sembrare una notifica automatica.
+posizioni) e' preceduta dalla propria intestazione, con titolo E colore
+distinti per categoria (vedi UPDATE_HEADER_TITLE_BY_KIND /
+UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
+senza leggere il testo: 🟥 "Aggiornamento Ordini Eseguiti" per
+ordini/fill/nuovi TWAP, 🟧 "Aggiornamento Alerts" per gli alert di
+prezzo, 🟩 "Aggiornamento Generale" per il riepilogo posizioni periodico.
+Le risposte ai comandi Telegram (es. /twap, /positions, /alert) restano
+invece precedute da una semplice riga separatrice neutra, per restare
+visivamente distinte senza per questo sembrare una notifica automatica.
 
 Fascia notturna (QUIET_HOURS_START_HOUR-QUIET_HOURS_END_HOUR, default
 22:00-08:00 fuso DISPLAY_TIMEZONE = Europe/Paris -- vedi is_quiet_hours):
@@ -286,12 +287,12 @@ ALERT_PROMPT_REPLY_MARKUP = {
 
 # Barre piu' vistose (Telegram non supporta colori nel testo dei messaggi
 # dei bot, quindi si usano emoji a blocco colorato) usate come intestazione
-# "NUOVO AGGIORNAMENTO" delle notifiche AUTOMATICHE (vedi
-# format_update_header), colorate per categoria cosi' si riconoscono a
-# colpo d'occhio anche senza leggere il testo: rosso per ordini/fill/nuovi
-# TWAP, arancione per gli alert di prezzo, verde per il riepilogo posizioni
-# periodico. Le risposte ai comandi Telegram (es. /twap, /positions) NON
-# passano da qui: usano il separatore neutro MESSAGE_SEPARATOR.
+# delle notifiche AUTOMATICHE (vedi format_update_header), colorate per
+# categoria cosi' si riconoscono a colpo d'occhio anche senza leggere il
+# testo: rosso per ordini/fill/nuovi TWAP, arancione per gli alert di
+# prezzo, verde per il riepilogo posizioni periodico. Le risposte ai
+# comandi Telegram (es. /twap, /positions) NON passano da qui: usano il
+# separatore neutro MESSAGE_SEPARATOR.
 UPDATE_HEADER_BAR_ORDERS = "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥"
 UPDATE_HEADER_BAR_ALERTS = "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧"
 UPDATE_HEADER_BAR_POSITIONS = "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩"
@@ -299,6 +300,17 @@ UPDATE_HEADER_BAR_BY_KIND = {
     "orders": UPDATE_HEADER_BAR_ORDERS,
     "alerts": UPDATE_HEADER_BAR_ALERTS,
     "positions": UPDATE_HEADER_BAR_POSITIONS,
+}
+
+# Titolo dell'intestazione delle notifiche AUTOMATICHE, distinto per
+# categoria (stessa chiave "kind" usata per UPDATE_HEADER_BAR_BY_KIND --
+# vedi format_update_header): cosi' oltre al colore della barra anche il
+# testo del titolo distingue a colpo d'occhio ordini/fill/nuovi TWAP,
+# alert di prezzo e riepilogo posizioni periodico.
+UPDATE_HEADER_TITLE_BY_KIND = {
+    "orders": "🕐 Aggiornamento Ordini Eseguiti",
+    "alerts": "🕐 Aggiornamento Alerts",
+    "positions": "🕐 Aggiornamento Generale",
 }
 
 
@@ -1024,13 +1036,15 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_update_header(now_ms: int, bar: str = UPDATE_HEADER_BAR_ORDERS) -> str:
-    """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill, alert,
-    riepilogo posizioni), colorata per categoria tramite `bar` (vedi
-    UPDATE_HEADER_BAR_ORDERS/ALERTS/POSITIONS e UPDATE_HEADER_BAR_BY_KIND)
-    cosi' si riconoscono a colpo d'occhio anche senza leggere il testo.
-    Mostrata nel fuso orario DISPLAY_TIMEZONE quando disponibile,
-    altrimenti in UTC (mai un crash per questo)."""
+def format_update_header(now_ms: int, kind: str = "orders") -> str:
+    """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill/nuovi
+    TWAP, alert, riepilogo posizioni), sia nel titolo che nel colore della
+    barra distinta per categoria in base a `kind` ("orders"/"alerts"/
+    "positions" -- vedi UPDATE_HEADER_TITLE_BY_KIND e
+    UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
+    senza leggere il resto del messaggio. Mostrata nel fuso orario
+    DISPLAY_TIMEZONE quando disponibile, altrimenti in UTC (mai un crash
+    per questo)."""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
@@ -1039,8 +1053,10 @@ def format_update_header(now_ms: int, bar: str = UPDATE_HEADER_BAR_ORDERS) -> st
         dt = datetime.utcfromtimestamp(now_ms / 1000)
         tz_label = " UTC"
     mese = ITALIAN_MONTHS[dt.month - 1]
+    title = UPDATE_HEADER_TITLE_BY_KIND.get(kind, UPDATE_HEADER_TITLE_BY_KIND["orders"])
+    bar = UPDATE_HEADER_BAR_BY_KIND.get(kind, UPDATE_HEADER_BAR_ORDERS)
     return (
-        f"🕐 NUOVO AGGIORNAMENTO — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
+        f"{title} — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
         f"{bar}"
     )
 
@@ -1921,10 +1937,12 @@ def main() -> int:
         )
 
     # --- Invio delle notifiche automatiche: ognuna con la propria
-    # intestazione "NUOVO AGGIORNAMENTO", colorata per categoria (vedi
-    # UPDATE_HEADER_BAR_BY_KIND) cosi' ordini/fill/nuovi TWAP (rosso),
-    # alert di prezzo (arancione) e riepilogo posizioni (verde) si
-    # riconoscono a colpo d'occhio anche senza leggere il testo.
+    # intestazione, titolo E colore distinti per categoria (vedi
+    # UPDATE_HEADER_TITLE_BY_KIND / UPDATE_HEADER_BAR_BY_KIND) cosi'
+    # ordini/fill/nuovi TWAP ("Aggiornamento Ordini Eseguiti", rosso),
+    # alert di prezzo ("Aggiornamento Alerts", arancione) e riepilogo
+    # posizioni ("Aggiornamento Generale", verde) si riconoscono a colpo
+    # d'occhio anche senza leggere il testo.
     #
     # Durante la fascia notturna (vedi is_quiet_hours/QUIET_HOURS_*) tutto
     # cio' che non e' un alert di prezzo viene trattenuto: NON si chiama
@@ -1939,8 +1957,7 @@ def main() -> int:
             if quiet and item.get("kind") != "alerts":
                 held_count += 1
                 continue
-            bar = UPDATE_HEADER_BAR_BY_KIND.get(item.get("kind"), UPDATE_HEADER_BAR_ORDERS)
-            separator = format_update_header(now_ms, bar)
+            separator = format_update_header(now_ms, item.get("kind", "orders"))
             try:
                 send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run, separator=separator)
             except Exception as e:
