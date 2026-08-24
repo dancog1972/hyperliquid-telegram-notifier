@@ -343,7 +343,7 @@
       "id": 5,
       "price": 79.0,
       "runs_since_notify": 0,
-      "triggered": false
+      "triggered": true
     },
     {
       "coin": "PURR",
@@ -388,7 +388,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 2,
+      "runs_since_notify": 3,
       "triggered": true
     },
     {
