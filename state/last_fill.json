@@ -386,7 +386,7 @@
       "id": 15,
       "mids_key": "PUMP",
       "price": 0.0051,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -397,7 +397,7 @@
       "mids_key": "PURR",
       "price": 0.145,
       "runs_since_notify": 0,
-      "triggered": false
+      "triggered": true
     },
     {
       "coin": "CAT",
@@ -411,6 +411,7 @@
     }
   ],
   "seen_tids": [
+    541256387166362,
     117845300981191,
     371466879903182,
     90053989477887,
@@ -909,8 +910,7 @@
     1048716289791996,
     686953673883645,
     713181208414198,
-    897263439448063,
-    541256387166362
+    897263439448063
   ],
   "twap_progress": {
     "2115076": {
