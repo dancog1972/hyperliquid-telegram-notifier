@@ -134,7 +134,11 @@ UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
 senza leggere il testo: 🟥 "Aggiornamento Ordini Eseguiti" per
 ordini/fill/nuovi TWAP, 🟧 "Aggiornamento Alerts" per gli alert di
 prezzo, 🟩 "Aggiornamento Generale" per il riepilogo posizioni periodico.
-Le risposte ai comandi Telegram (es. /twap, /positions, /alert) restano
+Per gli alert, il titolo include anche il ticker a cui si riferiscono
+(es. "🕐 Aggiornamento Alerts su: PURR"), cliccabile come il resto dei
+ticker del bot -- utile per distinguerli a colpo d'occhio quando ci sono
+piu' alert attivi. Le risposte ai comandi Telegram (es. /twap,
+/positions, /alert) restano
 invece precedute da una semplice riga separatrice neutra, per restare
 visivamente distinte senza per questo sembrare una notifica automatica.
 
@@ -1036,7 +1040,7 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_update_header(now_ms: int, kind: str = "orders") -> str:
+def format_update_header(now_ms: int, kind: str = "orders", coin: str | None = None, coin_kind: str = "perp") -> str:
     """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill/nuovi
     TWAP, alert, riepilogo posizioni), sia nel titolo che nel colore della
     barra distinta per categoria in base a `kind` ("orders"/"alerts"/
@@ -1044,7 +1048,15 @@ def format_update_header(now_ms: int, kind: str = "orders") -> str:
     UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
     senza leggere il resto del messaggio. Mostrata nel fuso orario
     DISPLAY_TIMEZONE quando disponibile, altrimenti in UTC (mai un crash
-    per questo)."""
+    per questo).
+
+    Per kind="alerts", se `coin` e' passato il titolo diventa "...su:
+    <TICKER>" (con `coin` reso come link cliccabile via ticker_mention,
+    kind=coin_kind) cosi' si capisce subito a quale coin si riferisce
+    l'alert senza dover aprire il messaggio -- utile perche' con piu'
+    alert attivi contemporaneamente altrimenti si distinguerebbero solo
+    dal testo sottostante. Per gli altri kind (o se coin non e' passato)
+    il comportamento resta quello di prima."""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
@@ -1054,6 +1066,8 @@ def format_update_header(now_ms: int, kind: str = "orders") -> str:
         tz_label = " UTC"
     mese = ITALIAN_MONTHS[dt.month - 1]
     title = UPDATE_HEADER_TITLE_BY_KIND.get(kind, UPDATE_HEADER_TITLE_BY_KIND["orders"])
+    if kind == "alerts" and coin:
+        title = f"{title} su: {ticker_mention(coin, kind=coin_kind)}"
     bar = UPDATE_HEADER_BAR_BY_KIND.get(kind, UPDATE_HEADER_BAR_ORDERS)
     return (
         f"{title} — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
@@ -1843,6 +1857,8 @@ def main() -> int:
                             "text": format_alert_cleared_message(alert, current_price, "holding_closed"),
                             "on_success": make_alert_remove_cb(alert.get("id")),
                             "kind": "alerts",
+                            "coin": coin,
+                            "coin_kind": alert_ticker_kind(alert),
                         }
                     )
                 elif not condition_met:
@@ -1851,6 +1867,8 @@ def main() -> int:
                             "text": format_alert_cleared_message(alert, current_price, "recovered"),
                             "on_success": make_alert_rearm_cb(alert),
                             "kind": "alerts",
+                            "coin": coin,
+                            "coin_kind": alert_ticker_kind(alert),
                         }
                     )
                 else:
@@ -1877,6 +1895,8 @@ def main() -> int:
                                 ),
                                 "on_success": make_alert_reset_counter_cb(alert),
                                 "kind": "alerts",
+                                "coin": coin,
+                                "coin_kind": alert_ticker_kind(alert),
                             }
                         )
                     else:
@@ -1896,6 +1916,8 @@ def main() -> int:
                             ),
                             "on_success": make_alert_mark_active_cb(alert),
                             "kind": "alerts",
+                            "coin": coin,
+                            "coin_kind": alert_ticker_kind(alert),
                         }
                     )
                 else:
@@ -1904,6 +1926,8 @@ def main() -> int:
                             "text": format_alert_triggered_message(alert, current_price, None, repeated=False),
                             "on_success": make_alert_remove_cb(alert.get("id")),
                             "kind": "alerts",
+                            "coin": coin,
+                            "coin_kind": alert_ticker_kind(alert),
                         }
                     )
 
@@ -1957,7 +1981,9 @@ def main() -> int:
             if quiet and item.get("kind") != "alerts":
                 held_count += 1
                 continue
-            separator = format_update_header(now_ms, item.get("kind", "orders"))
+            separator = format_update_header(
+                now_ms, item.get("kind", "orders"), coin=item.get("coin"), coin_kind=item.get("coin_kind", "perp")
+            )
             try:
                 send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run, separator=separator)
             except Exception as e:
