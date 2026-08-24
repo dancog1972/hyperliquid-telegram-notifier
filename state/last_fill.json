@@ -331,7 +331,7 @@
     "2137164"
   ],
   "last_positions_recap_ms": 1787542581714,
-  "last_time_ms": 1787544293043,
+  "last_time_ms": 1787544460017,
   "last_update_id": 603631113,
   "next_alert_id": 19,
   "price_alerts": [
@@ -386,7 +386,7 @@
       "id": 15,
       "mids_key": "PUMP",
       "price": 0.0051,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -396,7 +396,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 0,
+      "runs_since_notify": 1,
       "triggered": true
     },
     {
@@ -411,9 +411,8 @@
     }
   ],
   "seen_tids": [
-    827002981080582,
-    137263675653639,
     408259644560903,
+    137263675653639,
     1024598670075401,
     648792011427338,
     926783320665610,
@@ -910,14 +909,15 @@
     1048716289791996,
     686953673883645,
     713181208414198,
-    897263439448063
+    897263439448063,
+    954746228196263
   ],
   "twap_progress": {
     "2115076": {
       "coin": "BTC",
-      "executed_sz": 0.054580000000000295,
-      "last_ms": 1787543500056,
-      "notional": 4179.75492,
+      "executed_sz": 0.0547500000000003,
+      "last_ms": 1787544460017,
+      "notional": 4192.85648,
       "pending_count": 0,
       "pending_notional": 0.0,
       "pending_sz": 0.0,
