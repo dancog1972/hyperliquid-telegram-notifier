@@ -342,7 +342,7 @@
       "direction": "below",
       "id": 5,
       "price": 79.0,
-      "runs_since_notify": 3,
+      "runs_since_notify": 4,
       "triggered": true
     },
     {
@@ -360,7 +360,7 @@
       "id": 9,
       "mids_key": "BTC",
       "price": 77000.0,
-      "runs_since_notify": 2,
+      "runs_since_notify": 3,
       "triggered": true
     },
     {
@@ -388,7 +388,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -402,6 +402,7 @@
     }
   ],
   "seen_tids": [
+    319625273196567,
     742034680214914,
     922795549177221,
     1104611871870357,
@@ -900,8 +901,7 @@
     1048716289791996,
     686953673883645,
     623320672786422,
-    713181208414198,
-    319625273196567
+    713181208414198
   ],
   "twap_progress": {
     "2115076": {
