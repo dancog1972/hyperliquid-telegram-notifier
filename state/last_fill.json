@@ -394,7 +394,7 @@
       "id": 20,
       "mids_key": "PURR",
       "price": 0.13,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
