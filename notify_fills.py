@@ -41,9 +41,11 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 MIN_VALUE_USD_TO_SHOW USDC, default 10 --
                                 quelle sotto sono considerate "polvere" e
                                 omesse, con un conteggio di quante non sono
-                                mostrate): size e direzione, entry vs
-                                prezzo attuale, PnL non realizzato, prezzo
-                                di liquidazione ed eventuali ordini di
+                                mostrate): size e direzione, valore
+                                nozionale stimato in USDC (quando
+                                disponibile), entry vs prezzo attuale, PnL
+                                non realizzato, prezzo di liquidazione ed
+                                eventuali ordini di
                                 stop/take-profit collegati -- seguite da un
                                 blocco separato con i saldi SPOT non nulli
                                 (conto distinto dai perps su Hyperliquid,
@@ -109,7 +111,7 @@ mostrata quella nel riepilogo, piu' ricca di dettagli, ma l'alert resta
   quella coin, in un modo o nell'altro. QUESTO THROTTLE VALE PERO' SOLO SE
   IL PREZZO RESTA VICINO ALLA SOGLIA: se lo scarto percentuale tra prezzo
   attuale e soglia supera ALERT_URGENT_DEVIATION_PCT (variabile
-  d'ambiente, default 4%), la situazione e' considerata urgente e si
+  d'ambiente, default 8%), la situazione e' considerata urgente e si
   torna a notificare ad OGNI singolo giro finche' resta cosi'. Quando il
   prezzo torna oltre la soglia arriva un ultimo messaggio ("✅ Allarme
   rientrato") ma l'alert RESTA ATTIVO (mantenuto): torna solo "in
@@ -134,6 +136,16 @@ il riepilogo posizioni periodico. Le risposte ai comandi Telegram (es.
 /twap, /positions, /alert) restano invece precedute da una semplice riga
 separatrice neutra, per restare visivamente distinte senza per questo
 sembrare una notifica automatica.
+
+Fascia notturna (QUIET_HOURS_START_HOUR-QUIET_HOURS_END_HOUR, default
+22:00-08:00 fuso DISPLAY_TIMEZONE = Europe/Paris -- vedi is_quiet_hours):
+le notifiche automatiche "di aggiornamento" (fill/ordini, nuovi TWAP,
+riepilogo posizioni) vengono trattenute e mandate al primo giro utile
+fuori da questa fascia, invece che nel cuore della notte -- non vengono
+perse, solo rimandate. Gli ALERT DI PREZZO fanno eccezione e vengono
+sempre mandati subito, a qualunque ora: sono avvisi protettivi e non ha
+senso rimandarli. I comandi Telegram (es. /twap, /positions) restano
+sempre disponibili a richiesta, in qualunque momento.
 
 Ogni ticker citato (in comandi E notifiche automatiche: /twap, /positions,
 /alerts, alert scattati/rientrati, fill, nuovi TWAP) e' un link cliccabile
@@ -209,10 +221,21 @@ DEFAULT_ALERT_URGENT_DEVIATION_PCT = 8.0
 # filtro "polvere" sulle posizioni perps) senza doverlo chiedere a mano.
 DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS = 4.0
 
-# Fuso orario in cui mostrare l'intestazione di aggiornamento. Se il
-# database IANA non e' disponibile sul runner, si ricade su UTC senza far
-# fallire lo script (vedi format_update_header).
+# Fuso orario in cui mostrare l'intestazione di aggiornamento e in cui e'
+# calcolata la fascia notturna qui sotto. Se il database IANA non e'
+# disponibile sul runner, si ricade su UTC senza far fallire lo script
+# (vedi format_update_header / is_quiet_hours).
 DISPLAY_TIMEZONE = "Europe/Paris"
+
+# Fascia notturna (fuso DISPLAY_TIMEZONE) durante la quale le notifiche
+# automatiche "di aggiornamento" -- ordini/fill, nuovi TWAP, riepilogo
+# posizioni -- vengono trattenute invece di essere mandate subito (vedi
+# is_quiet_hours e il suo uso in main()): non vanno perse, vengono solo
+# rimandate al primo giro utile fuori da questa fascia. Gli ALERT di
+# prezzo NON sono soggetti a questa restrizione: sono avvisi protettivi e
+# vanno mandati a qualunque ora, notte compresa.
+QUIET_HOURS_START_HOUR = 22  # incluso: dalle 22:00...
+QUIET_HOURS_END_HOUR = 8  # ...escluso: fino alle 8:00 (non incluse)
 
 ITALIAN_MONTHS = [
     "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
@@ -1022,6 +1045,24 @@ def format_update_header(now_ms: int, bar: str = UPDATE_HEADER_BAR_ORDERS) -> st
     )
 
 
+def is_quiet_hours(now_ms: int) -> bool:
+    """True se now_ms cade nella fascia notturna QUIET_HOURS_START_HOUR -
+    QUIET_HOURS_END_HOUR (fuso DISPLAY_TIMEZONE), durante la quale le
+    notifiche automatiche "di aggiornamento" (ordini/fill, nuovi TWAP,
+    riepilogo posizioni) vengono trattenute -- vedi il loro uso in
+    main(). Gli alert di prezzo NON passano da qui: vengono sempre
+    mandati, a qualunque ora. Se il fuso orario non e' disponibile per
+    qualche motivo si assume "non e' notte" (fail-open): meglio una
+    notifica di troppo che perderne una per un problema d'ambiente."""
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
+    except Exception:
+        return False
+    hour = dt.hour
+    return hour >= QUIET_HOURS_START_HOUR or hour < QUIET_HOURS_END_HOUR
+
+
 def format_new_twap_message(record: dict) -> str:
     """Messaggio inviato non appena un nuovo TWAP viene rilevato (avviato),
     prima ancora che scatti la sua prima slice."""
@@ -1127,10 +1168,13 @@ def format_positions_message(
     spot_state: dict | None = None,
     spot_meta: dict | None = None,
 ) -> str:
-    """Risposta al comando /positions: posizioni PERPS aperte (con leva) con
-    entry vs prezzo attuale, PnL, prezzo di liquidazione ed eventuali
-    stop/TP collegati (dedotti dagli ordini aperti reduce-only con
-    trigger), seguite -- se spot_state e' passato -- da un blocco separato
+    """Risposta al comando /positions: posizioni PERPS aperte (con leva e,
+    quando stimabile, il valore nozionale in USDC -- vedi
+    get_position_value_usd, lo stesso usato per il filtro "polvere" e per
+    l'ordinamento sotto) con entry vs prezzo attuale, PnL, prezzo di
+    liquidazione ed eventuali stop/TP collegati (dedotti dagli ordini
+    aperti reduce-only con trigger), seguite -- se spot_state e' passato
+    -- da un blocco separato
     "Saldi spot" (vedi format_spot_balances_block): su Hyperliquid perps e
     spot sono due conti/saldi distinti, quindi vengono recuperati con due
     chiamate diverse e mostrati in due blocchi diversi. spot_meta
@@ -1189,7 +1233,7 @@ def format_positions_message(
             orders_by_coin[coin].append(o)
 
     blocks = ["📋 Posizioni aperte:"]
-    for pos in positions:
+    for pos, value_usd in positions_with_value:
         coin = pos.get("coin", "?")
         try:
             szi = float(pos.get("szi", 0))
@@ -1204,6 +1248,8 @@ def format_positions_message(
         header = f"— {ticker_mention(coin, kind='perp')}: {direction} {abs_sz:g}"
         if lev_value:
             header += f" ({lev_value}x)"
+        if value_usd is not None:
+            header += f" (~{value_usd:g} USDC)"
         lines = [header]
 
         try:
@@ -1878,9 +1924,21 @@ def main() -> int:
     # intestazione "NUOVO AGGIORNAMENTO", colorata per categoria (vedi
     # UPDATE_HEADER_BAR_BY_KIND) cosi' ordini/fill/nuovi TWAP (rosso),
     # alert di prezzo (arancione) e riepilogo posizioni (verde) si
-    # riconoscono a colpo d'occhio anche senza leggere il testo. ---
+    # riconoscono a colpo d'occhio anche senza leggere il testo.
+    #
+    # Durante la fascia notturna (vedi is_quiet_hours/QUIET_HOURS_*) tutto
+    # cio' che non e' un alert di prezzo viene trattenuto: NON si chiama
+    # on_success, quindi lo stato non avanza e la stessa notifica verra'
+    # ritentata (e stavolta mandata) al primo giro utile fuori dalla
+    # fascia notturna -- nessuna notifica viene persa, solo rimandata. Gli
+    # alert restano sempre immediati, a qualunque ora. ---
     if outgoing:
+        quiet = is_quiet_hours(now_ms)
+        held_count = 0
         for item in outgoing:
+            if quiet and item.get("kind") != "alerts":
+                held_count += 1
+                continue
             bar = UPDATE_HEADER_BAR_BY_KIND.get(item.get("kind"), UPDATE_HEADER_BAR_ORDERS)
             separator = format_update_header(now_ms, bar)
             try:
@@ -1889,6 +1947,11 @@ def main() -> int:
                 print(f"ERRORE invio Telegram: {e}", file=sys.stderr)
                 continue
             item["on_success"]()
+        if held_count:
+            print(
+                f"Fascia notturna ({QUIET_HOURS_START_HOUR}-{QUIET_HOURS_END_HOUR} {DISPLAY_TIMEZONE}): "
+                f"{held_count} notifica/e non-alert trattenuta/e, verranno mandate al prossimo giro utile."
+            )
 
     # --- Comandi Telegram in arrivo: risposte dirette a /twap e /positions,
     # inviate subito (non accodate/con intestazione), solo se il messaggio
