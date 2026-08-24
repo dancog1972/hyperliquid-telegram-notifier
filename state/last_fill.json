@@ -386,7 +386,7 @@
       "id": 15,
       "mids_key": "PUMP",
       "price": 0.0051,
-      "runs_since_notify": 2,
+      "runs_since_notify": 3,
       "triggered": true
     },
     {
@@ -396,7 +396,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -406,12 +406,12 @@
       "id": 18,
       "mids_key": "@126",
       "price": 1.0,
-      "runs_since_notify": 0,
+      "runs_since_notify": 1,
       "triggered": true
     }
   ],
   "seen_tids": [
-    1036520264734680,
+    279317345310671,
     807985581043016,
     1089495304682827,
     759539938850312,
@@ -871,7 +871,7 @@
     407320724916174,
     503978846234580,
     656950521685974,
-    279317345310671,
+    1036520264734680,
     166094364602320,
     755316809066449,
     996069058615249,
