@@ -333,8 +333,8 @@
   ],
   "last_positions_recap_ms": 1787557035503,
   "last_time_ms": 1787560723046,
-  "last_update_id": 603631122,
-  "next_alert_id": 20,
+  "last_update_id": 603631123,
+  "next_alert_id": 21,
   "price_alerts": [
     {
       "coin": "HYPE",
@@ -342,7 +342,7 @@
       "direction": "below",
       "id": 5,
       "price": 79.0,
-      "runs_since_notify": 4,
+      "runs_since_notify": 0,
       "triggered": true
     },
     {
@@ -388,6 +388,15 @@
       "id": 19,
       "mids_key": "PUMP",
       "price": 0.00515,
+      "triggered": false
+    },
+    {
+      "coin": "PURR",
+      "created_ms": 1787561059403,
+      "direction": "below",
+      "id": 20,
+      "mids_key": "PURR",
+      "price": 0.13,
       "triggered": false
     }
   ],
