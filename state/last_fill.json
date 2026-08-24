@@ -342,7 +342,7 @@
       "direction": "below",
       "id": 5,
       "price": 79.0,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -388,7 +388,7 @@
       "id": 16,
       "mids_key": "PURR",
       "price": 0.145,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
