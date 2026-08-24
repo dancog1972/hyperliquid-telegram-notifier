@@ -331,7 +331,7 @@
     "2137164"
   ],
   "last_positions_recap_ms": 1787528180954,
-  "last_time_ms": 1787530223055,
+  "last_time_ms": 1787530267068,
   "last_update_id": 603631113,
   "next_alert_id": 19,
   "price_alerts": [
@@ -909,7 +909,7 @@
     906378038478838,
     1083293215479797,
     897263439448063,
-    814245985370485
+    916658819842361
   ],
   "twap_progress": {
     "2115076": {
@@ -1057,9 +1057,9 @@
     },
     "2133671": {
       "coin": "PUMP",
-      "executed_sz": 332557.0,
-      "last_ms": 1787529637034,
-      "notional": 1701.7390970000013,
+      "executed_sz": 334780.0,
+      "last_ms": 1787530267068,
+      "notional": 1713.3942860000013,
       "pending_count": 1,
       "pending_notional": 11.652552,
       "pending_sz": 2217.0,
