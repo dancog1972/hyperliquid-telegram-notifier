@@ -747,7 +747,7 @@
       "id": 24,
       "mids_key": "PURR",
       "price": 0.135,
-      "runs_since_notify": 0,
+      "runs_since_notify": 1,
       "triggered": true
     }
   ],
