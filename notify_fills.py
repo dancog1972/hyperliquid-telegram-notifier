@@ -423,28 +423,53 @@ def fetch_all_mids() -> dict:
 
 
 def fetch_twap_records(wallet: str) -> list:
-    """Ritorna la lista (normalizzata) dei TWAP dell'utente -- attivi e
-    passati -- con qualunque campo si riesca a interpretare in modo
-    affidabile: twap_id, coin, side, total_sz (size target), minutes
-    (durata), status, status_raw, start_ms.
+    """Ritorna la lista (normalizzata, SENZA deduplicare per twap_id --
+    vedi build_twap_records_by_id per quello) dei TWAP dell'utente --
+    attivi e passati -- con qualunque campo si riesca a interpretare in
+    modo affidabile: twap_id, coin, side, total_sz (size target), minutes
+    (durata), status, status_raw, start_ms, record_time_ms.
+
+    SCHEMA CONFERMATO (non piu' solo ipotizzato -- verificato dall'utente
+    interrogando direttamente l'endpoint "twapHistory" con il proprio
+    account, il 25/08/2026): ogni voce grezza ha la forma
+        {"time": <secondi Unix>, "twapId": <int>,
+         "state": {"coin", "side", "sz", "executedSz", "executedNtl",
+                    "minutes", "timestamp" (MILLISECONDI!), "randomize",
+                    "reduceOnly", "user", ...},
+         "status": {"status": <stringa>, "description"?: <stringa>}}
+    e per OGNI singolo TWAP (stesso twapId) l'endpoint restituisce PIU' di
+    una voce: almeno una per quando e' stato "activated" (executedSz
+    ancora a 0) e -- se nel frattempo si e' concluso -- una successiva con
+    lo status finale ("finished" o "terminated", confermati entrambi
+    realmente in uso). "state.timestamp" resta IDENTICO su tutte le voci
+    dello stesso twapId (e' l'istante di attivazione originale, in
+    millisecondi) mentre "time" (in SECONDI, non millisecondi -- occhio
+    alla scala diversa dagli altri campi!) e' l'istante in cui QUELLA
+    specifica voce di storico e' stata registrata, quindi cresce da una
+    voce alla successiva per lo stesso twapId. "start_ms" qui sotto usa
+    sempre state.timestamp (gia' in ms, costante) quando disponibile;
+    "record_time_ms" e' invece time*1000, usato SOLO da
+    build_twap_records_by_id per scegliere la voce piu' recente tra i
+    duplicati dello stesso twapId (quindi tipicamente quella con lo status
+    finale, se esiste).
 
     "status" e' una stringa gia' interpretata quando possibile: gestisce
-    sia il caso in cui l'API restituisce direttamente una stringa (es.
-    "untriggered", "activated"), sia il caso -- comune in API basate su
-    Rust/serde -- in cui uno stato "chiuso" arriva come oggetto "taggato"
-    con una singola chiave, es. {"finished": {...}}, nel qual caso quella
-    chiave viene usata come nome dello status. "status_raw" conserva
-    sempre il valore originale non processato, cosi' se "status" risulta
-    None (forma non riconosciuta) resta comunque visibile per diagnosi
-    (vedi format_twap_status_message) invece di sparire silenziosamente.
+    sia il caso confermato -- un oggetto {"status": <stringa>,
+    "description"?: ...} -- sia, difensivamente, un oggetto "taggato" con
+    una singola chiave stringa (pattern comune in altre API Rust/serde,
+    mai osservato qui ma gestito per sicurezza) sia una stringa semplice
+    diretta. "status_raw" conserva sempre il valore originale non
+    processato, cosi' se "status" risulta None (forma non riconosciuta)
+    resta comunque visibile per diagnosi (vedi format_twap_status_message)
+    invece di sparire silenziosamente.
 
-    Best-effort e best-guess: il nome esatto di questo endpoint e il suo
-    schema non sono documentati in modo verificabile, quindi si provano piu'
-    candidati e si scartano silenziosamente i campi che non si riescono a
-    interpretare con sicurezza (mai un dato indovinato). Ritorna [] se
-    nessun candidato risponde in modo utilizzabile -- in tal caso sia il
-    rilevamento "nuovo TWAP" sia la % di completamento nei messaggi di stato
-    vengono semplicemente omessi, senza far fallire il resto della
+    Il nome esatto di questo endpoint (si provano piu' candidati, vedi
+    TWAP_STATE_TYPE_CANDIDATES) resta best-effort/non ufficialmente
+    documentato da Hyperliquid, ma lo schema sopra e' ora confermato
+    empiricamente per il candidato "twapHistory". Ritorna [] se nessun
+    candidato risponde in modo utilizzabile -- in tal caso sia il
+    rilevamento "nuovo TWAP" sia la % di completamento nei messaggi di
+    stato vengono semplicemente omessi, senza far fallire il resto della
     notifica."""
     for type_name in TWAP_STATE_TYPE_CANDIDATES:
         try:
@@ -471,15 +496,28 @@ def fetch_twap_records(wallet: str) -> list:
                 if isinstance(status_raw.get("status"), str):
                     status = status_raw.get("status")
                 else:
-                    # Alcune API Rust/serde-based rappresentano un enum come
-                    # oggetto "taggato": {"finished": {...}} invece di una
-                    # stringa semplice -- se il dict ha ESATTAMENTE una
-                    # chiave stringa (e nessun'altra struttura ambigua), si
-                    # usa quella chiave come nome dello status. Mai
-                    # indovinato se ci sono piu' chiavi o zero chiavi.
+                    # Difensivo, mai osservato con questo endpoint (vedi
+                    # docstring sopra) ma innocuo da gestire: un oggetto
+                    # "taggato" con una singola chiave stringa, es.
+                    # {"finished": {...}}, usa quella chiave come status.
+                    # Mai indovinato se ci sono piu' chiavi o zero chiavi.
                     str_keys = [k for k in status_raw.keys() if isinstance(k, str)]
                     if len(str_keys) == 1:
                         status = str_keys[0]
+            # start_ms: SEMPRE da state.timestamp (gia' in millisecondi,
+            # costante per tutte le voci dello stesso twapId -- l'istante
+            # di attivazione vero) quando disponibile; altrimenti da
+            # record["time"] convertito da secondi a millisecondi (*1000
+            # -- NON va usato cosi' com'e', e' in una scala diversa).
+            state_timestamp_ms = state.get("timestamp")
+            record_time_sec = record.get("time")
+            if isinstance(state_timestamp_ms, (int, float)):
+                start_ms = state_timestamp_ms
+            elif isinstance(record_time_sec, (int, float)):
+                start_ms = record_time_sec * 1000
+            else:
+                start_ms = None
+            record_time_ms = (record_time_sec * 1000) if isinstance(record_time_sec, (int, float)) else start_ms
             parsed.append(
                 {
                     "twap_id": twap_id,
@@ -490,12 +528,40 @@ def fetch_twap_records(wallet: str) -> list:
                     "minutes": state.get("minutes"),
                     "status": status,
                     "status_raw": status_raw,
-                    "start_ms": record.get("time", state.get("timestamp")),
+                    "start_ms": start_ms,
+                    "record_time_ms": record_time_ms,
                 }
             )
         if parsed:
             return parsed
     return []
+
+
+def build_twap_records_by_id(twap_records: list) -> dict:
+    """Costruisce il dizionario twap_id (stringa) -> record piu'
+    aggiornato, a partire dalla lista grezza (non deduplicata) di
+    fetch_twap_records. Necessario perche' l'endpoint "twapHistory"
+    restituisce PIU' voci per lo stesso twap_id (una per "activated", una
+    per lo status finale se il TWAP si e' gia' concluso -- vedi la
+    docstring di fetch_twap_records per i dettagli, confermati
+    empiricamente il 25/08/2026): un semplice
+    "{r['twap_id']: r for r in twap_records}" prenderebbe l'ULTIMA voce
+    nell'ordine restituito dall'API per quel twap_id, che empiricamente e'
+    quasi sempre quella "activated" (perche' l'API restituisce le voci
+    ordinate per "time" decrescente, quindi lo status finale -- che ha un
+    "time" maggiore, essendo successivo -- compare PRIMA, e "activated"
+    compare DOPO, sovrascrivendo la voce buona) -- questo era la causa
+    reale per cui TWAP gia' completati/terminati continuavano a essere
+    mostrati come ancora attivi. Qui invece si tiene esplicitamente, per
+    ogni twap_id, la voce con "record_time_ms" piu' alto (la piu' recente
+    in assoluto), che quindi e' lo status finale quando esiste."""
+    by_id = {}
+    for r in twap_records:
+        tid = str(r.get("twap_id"))
+        existing = by_id.get(tid)
+        if existing is None or (r.get("record_time_ms") or 0) >= (existing.get("record_time_ms") or 0):
+            by_id[tid] = r
+    return by_id
 
 
 def fetch_clearinghouse_state(wallet: str) -> dict:
@@ -1355,6 +1421,87 @@ def closed_twap_status_label(status) -> str:
 # silenzioso).
 CLOSED_TWAP_DISPLAY_LIMIT = 5
 
+# --- Rilevamento TWAP chiusi: strategia a piu' livelli --------------------
+# Lo status testuale restituito dall'endpoint best-effort dei TWAP si e'
+# rivelato inaffidabile per capire se un TWAP e' concluso (vedi
+# is_closed_twap_status/fetch_twap_records): anche dopo aver gestito sia
+# stringhe semplici sia oggetti "taggati" stile Rust/serde, TWAP
+# confermati conclusi su Hyperliquid stesso (es. un BTC completato il
+# 24/08 e un CASHCAT completato il 22/08, segnalati dall'utente)
+# continuavano a comparire come "status non riconosciuto" o peggio con
+# uno status letto correttamente ma che non corrisponde a nessuna delle
+# etichette note (es. potrebbe restare "activated" anche a job concluso,
+# se quell'endpoint non aggiorna piu' lo status per TWAP vecchi). Per
+# questo il rilevamento NON si basa piu' solo sullo status testuale, ma
+# combina tre segnali, dal piu' al meno affidabile:
+#
+#   1) status esplicito e riconosciuto come chiuso (is_closed_twap_status)
+#      -- quando disponibile e interpretabile, e' il segnale piu' diretto.
+#   2) durata pianificata scaduta: se il TWAP ha una durata dichiarata
+#      (minutes) e un orario di inizio (start_ms), e il tempo attuale ha
+#      superato start_ms + minutes (con un margine di sicurezza), il TWAP
+#      DEVE essersi concluso per costruzione -- un TWAP su Hyperliquid non
+#      puo' restare "in esecuzione" oltre la propria durata pianificata,
+#      quindi questo segnale non dipende affatto dal capire il campo
+#      status ed e' quindi molto piu' robusto.
+#   3) inattivita' prolungata: se nessuna delle due sopra e' disponibile
+#      (dati mancanti) ma non arrivano esecuzioni da molto tempo (oltre
+#      TWAP_STALE_HOURS), si presume comunque concluso/fermo -- segnale
+#      piu' debole, quindi etichettato in modo esplicito come "presunto"
+#      e non come "completato con certezza".
+#
+# I livelli 2 e 3 sono PRESUNZIONI, non conferme: usano un'etichetta
+# diversa da quelle di TWAP_CLOSED_STATUS_LABELS per essere oneste sul
+# fatto che non sappiamo con certezza l'esito (completato vs terminato
+# anticipatamente vs annullato), solo che il TWAP non e' plausibilmente
+# ancora "in corso".
+TWAP_EXPIRY_GRACE_MINUTES = 15  # margine oltre la durata pianificata
+TWAP_STALE_HOURS = 12  # nessuna esecuzione da piu' di N ore -> presunto fermo
+
+
+def presumed_twap_expiry_label(record: dict | None, prog: dict, now_ms: int | None):
+    """Livelli 2 e 3 della strategia di rilevamento TWAP chiusi (vedi il
+    blocco di commenti sopra TWAP_EXPIRY_GRACE_MINUTES): ritorna
+    un'etichetta se si PRESUME che il TWAP sia concluso, altrimenti None
+    (nel qual caso il chiamante deve continuare a considerarlo aperto).
+    Richiede now_ms -- se assente ritorna sempre None, disattivando questi
+    due livelli (si torna al solo status testuale, vedi
+    is_closed_twap_status).
+
+    Livello 2 (durata scaduta): se il record ha sia "start_ms" sia
+    "minutes" (durata pianificata in minuti) ed e' trascorso
+    start_ms + minutes + un margine di sicurezza (TWAP_EXPIRY_GRACE_MINUTES),
+    il TWAP non puo' piu' essere "in esecuzione" per costruzione, a
+    prescindere da cosa dica il campo status -- e' il segnale piu'
+    affidabile dei due perche' si basa solo su numeri (nessuna stringa da
+    interpretare).
+
+    Livello 3 (inattivita' prolungata): se il livello 2 non e' applicabile
+    (start_ms o minutes mancanti) ma l'ultima esecuzione nota
+    (prog["last_ms"]) risale a piu' di TWAP_STALE_HOURS fa, si presume
+    comunque fermo/concluso -- segnale piu' debole (un TWAP molto lungo a
+    bassa frequenza potrebbe legittimamente restare inattivo per ore tra
+    una slice e l'altra), per questo la soglia e' volutamente larga."""
+    if now_ms is None:
+        return None
+    start_ms = record.get("start_ms") if record else None
+    minutes = record.get("minutes") if record else None
+    if start_ms is not None and minutes is not None:
+        try:
+            expected_end_ms = float(start_ms) + float(minutes) * 60_000
+            if now_ms > expected_end_ms + TWAP_EXPIRY_GRACE_MINUTES * 60_000:
+                return "⌛ Durata pianificata terminata (presumibilmente concluso)"
+        except (TypeError, ValueError):
+            pass
+    last_ms = prog.get("last_ms") if prog else None
+    if last_ms is not None:
+        try:
+            if now_ms - float(last_ms) > TWAP_STALE_HOURS * 3600_000:
+                return "🕰️ Nessuna esecuzione recente (presumibilmente fermo)"
+        except (TypeError, ValueError):
+            pass
+    return None
+
 
 def format_new_twap_message(record: dict, triggered: bool = False, spot_meta: dict | None = None) -> str:
     """Messaggio inviato quando un TWAP inizia davvero a eseguire, prima
@@ -1405,6 +1552,7 @@ def format_twap_status_message(
     mids: dict,
     pending_twap_ids=None,
     spot_meta: dict | None = None,
+    now_ms: int | None = None,
 ) -> str:
     """Risposta al comando /twap: PRIMA i TWAP "⏳ In attesa di trigger"
     (impostati con una condizione di prezzo, status "untriggered" -- vedi
@@ -1415,23 +1563,29 @@ def format_twap_status_message(
     ogni singolo ordine TWAP: somma l'eseguito cumulato di tutti i TWAP
     con esecuzioni note (twap_progress) sulla stessa coin -- BUY e SELL
     separati, non sommati insieme, per non falsare il totale se ci sono
-    TWAP di direzione opposta sulla stessa coin -- MA SOLO per i TWAP il
-    cui status (da twap_records_by_id, vedi is_closed_twap_status) NON
-    risulta chiuso: un TWAP completato, terminato anticipatamente o
-    annullato non viene piu' incluso qui, altrimenti resterebbe mostrato
-    per sempre come "in corso" (con tanto di %, "mancano circa..." e "vs
-    prezzo attuale") anche molto tempo dopo essere finito -- questo era
-    esattamente il bug segnalato dall'utente (es. un TWAP BTC completato
-    il 24/08 o un TWAP CASHCAT completato il 22/08, entrambi ancora
-    mostrati come attivi). I TWAP chiusi vengono invece elencati in una
-    sezione separata "✅ Completati/terminati di recente", in forma
+    TWAP di direzione opposta sulla stessa coin -- MA SOLO per i TWAP che
+    NON risultano chiusi (vedi il blocco di commenti sopra
+    TWAP_EXPIRY_GRACE_MINUTES per la strategia a piu' livelli usata per
+    deciderlo): un TWAP chiuso non viene piu' incluso qui, altrimenti
+    resterebbe mostrato per sempre come "in corso" (con tanto di %,
+    "mancano circa..." e "vs prezzo attuale") anche molto tempo dopo
+    essere finito -- questo era esattamente il bug segnalato dall'utente
+    (es. un TWAP BTC completato il 24/08 o un TWAP CASHCAT completato il
+    22/08, entrambi ancora mostrati come attivi anche dopo un primo
+    tentativo di correzione basato solo sullo status testuale, che si e'
+    rivelato insufficiente). I TWAP chiusi vengono invece elencati in una
+    sezione separata "✅ Completati/terminati di recente" (etichetta
+    esatta a seconda del livello di certezza -- vedi sopra), in forma
     compatta e senza il linguaggio da "ancora in corso" (niente %,
     "mancano circa", "vs prezzo attuale"), limitata alle poche esecuzioni
     piu' recenti (vedi CLOSED_TWAP_DISPLAY_LIMIT) per non allungare
-    troppo il messaggio. Se lo status di un TWAP non e' disponibile (id
-    non piu' nell'elenco best-effort dell'endpoint) viene considerato
-    ancora aperto, per non nascondere per errore un TWAP che potrebbe
-    essere ancora in corso.
+    troppo il messaggio.
+
+    now_ms (opzionale, vedi main) e' l'orario corrente in millisecondi:
+    serve ai livelli 2 e 3 della strategia di rilevamento (durata
+    pianificata scaduta / inattivita' prolungata). Se omesso, quei due
+    livelli sono semplicemente disattivati e si torna al solo status
+    testuale (comportamento precedente).
 
     I record "raw" dell'endpoint TWAP (fetch_twap_records) sono usati
     solo per stimare la % di completamento quando disponibile e per
@@ -1502,6 +1656,17 @@ def format_twap_status_message(
         record = twap_records_by_id.get(key)
         status = record.get("status") if record else None
         if is_closed_twap_status(status):
+            # Livello 1: status esplicito e riconosciuto -- il segnale
+            # piu' affidabile quando disponibile.
+            closed_label = closed_twap_status_label(status)
+        else:
+            # Livelli 2/3: presunzione via durata scaduta o inattivita'
+            # prolungata (vedi presumed_twap_expiry_label) -- necessari
+            # perche' lo status testuale da solo si e' rivelato
+            # insufficiente per i TWAP realmente conclusi (vedi
+            # docstring/commento sopra TWAP_EXPIRY_GRACE_MINUTES).
+            closed_label = presumed_twap_expiry_label(record, prog, now_ms)
+        if closed_label:
             executed_sz = float(prog.get("executed_sz", 0.0) or 0.0)
             notional = float(prog.get("notional", 0.0) or 0.0)
             avg_px = (notional / executed_sz) if executed_sz else 0.0
@@ -1511,7 +1676,7 @@ def format_twap_status_message(
                 "executed_sz": executed_sz,
                 "avg_px": avg_px,
                 "last_ms": prog.get("last_ms"),
-                "status": status,
+                "status_label": closed_label,
             })
             continue
         agg = per_coin[raw_coin][prog.get("side") or ""]
@@ -1600,8 +1765,7 @@ def format_twap_status_message(
             if side_txt:
                 line += f": {side_txt}"
             line += f" {entry['executed_sz']:g} @ media {entry['avg_px']:g}"
-            status_label = closed_twap_status_label(entry["status"])
-            line += f" — {status_label}"
+            line += f" — {entry['status_label']}"
             if entry["last_ms"]:
                 line += f" ({fmt_ts(entry['last_ms'])})"
             closed_lines.append(line)
@@ -2148,7 +2312,7 @@ def main() -> int:
     except Exception as e:
         print(f"AVVISO: impossibile recuperare l'elenco dei TWAP: {e}", file=sys.stderr)
         twap_records = []
-    twap_records_by_id = {str(r["twap_id"]): r for r in twap_records}
+    twap_records_by_id = build_twap_records_by_id(twap_records)
 
     # Coda di tutti i messaggi AUTOMATICI da mandare in questo giro (nuovi
     # TWAP, ordini eseguiti): si costruisce prima di inviare qualunque cosa,
@@ -2604,6 +2768,7 @@ def main() -> int:
                         reply_text = format_twap_status_message(
                             twap_progress, twap_records_by_id, get_mids(),
                             pending_twap_ids=pending_twap_ids, spot_meta=get_spot_meta(),
+                            now_ms=now_ms,
                         )
                     elif command == "positions":
                         ch_state = get_positions_state()
