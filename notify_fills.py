@@ -36,7 +36,14 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 effort endpoint storico TWAP non vengono mai
                                 mostrati uno per uno (rischio di superare il
                                 limite di lunghezza di Telegram).
-  /positions                   Posizioni PERPS aperte, ordinate per valore
+  /positions                   In testa, il valore NOZIONALE stimato di
+                                TUTTE le posizioni PERPS aperte in USDC
+                                (anche quelle "polvere" sotto, cosi' il
+                                totale riflette l'intero portafoglio)
+                                affiancato dal saldo USDC del conto SPOT
+                                per confronto -- sono due conti distinti
+                                su Hyperliquid, quindi in generale NON
+                                coincidono. Poi le posizioni PERPS aperte, ordinate per valore
                                 nozionale USDC DECRESCENTE (sopra i
                                 MIN_VALUE_USD_TO_SHOW USDC, default 10 --
                                 quelle sotto sono considerate "polvere" e
@@ -725,6 +732,25 @@ def extract_spot_balances(spot_state: dict) -> list:
     return balances
 
 
+def get_spot_usdc_balance(spot_state: dict):
+    """Ritorna il saldo USDC del conto SPOT (float, 1:1 col suo stesso
+    controvalore -- niente prezzo da risolvere) se presente, altrimenti
+    None se spot_state non e' interpretabile. Un saldo USDC assente
+    dall'elenco (vedi extract_spot_balances, che ignora i saldi nulli)
+    e' un genuino zero, non "sconosciuto" -- usato da
+    format_positions_message per il confronto tra valore nozionale delle
+    posizioni perps e liquidita' USDC disponibile in spot (due conti
+    distinti su Hyperliquid, NON la stessa cosa nonostante il secondo
+    tenda a muoversi in base a depositi/prelievi legati al trading sul
+    primo)."""
+    if not isinstance(spot_state, dict):
+        return None
+    for b in extract_spot_balances(spot_state):
+        if b["coin"] == "USDC":
+            return b["total"]
+    return 0.0
+
+
 def format_spot_balances_block(spot_state: dict, mids: dict, spot_meta: dict | None = None) -> str | None:
     """Blocco "Saldi spot" per /positions: saldi non nulli dei token nel
     wallet spot (NON posizioni con leva come i perps di
@@ -896,6 +922,7 @@ def format_alert_triggered_message(
     urgent: bool = False,
     urgent_deviation_pct: float = DEFAULT_ALERT_URGENT_DEVIATION_PCT,
     spot_balance: dict | None = None,
+    now_ms: int | None = None,
 ) -> str:
     """Notifica automatica mandata quando un alert di prezzo scatta (o
     resta attivo). Se hai una posizione PERPS aperta su quella coin (o, in
@@ -910,7 +937,13 @@ def format_alert_triggered_message(
     viene mostrata solo la posizione perps (piu' ricca di dettagli:
     leva, PnL, liquidazione), ma l'alert resta "sticky" grazie a
     entrambe. Vedi main() per la logica di stato ("triggered") e
-    format_alert_cleared_message per come si ferma."""
+    format_alert_cleared_message per come si ferma.
+
+    now_ms (opzionale) mostra la data/ora in fondo al messaggio (vedi
+    format_display_datetime): per gli alert la data non compare piu' nel
+    titolo (vedi format_update_header, non essenziale li'), quindi resta
+    solo qui nel corpo -- se non passato, la riga viene semplicemente
+    omessa."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     verso = "sceso sotto" if alert.get("direction") == "below" else "salito sopra"
@@ -946,10 +979,12 @@ def format_alert_triggered_message(
         )
     else:
         lines.append("(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)")
+    if now_ms is not None:
+        lines.append(f"🕐 {format_display_datetime(now_ms)}")
     return "\n".join(lines)
 
 
-def format_alert_cleared_message(alert: dict, current_price: float, reason: str) -> str:
+def format_alert_cleared_message(alert: dict, current_price: float, reason: str, now_ms: int | None = None) -> str:
     """Notifica mandata quando un alert "attivo" (con posizione perps e/o
     saldo spot collegato, vedi format_alert_triggered_message) smette di
     ripetersi:
@@ -960,7 +995,11 @@ def format_alert_cleared_message(alert: dict, current_price: float, reason: str)
       un modo o nell'altro.
     - reason="holding_closed": non hai piu' ne' una posizione perps ne' un
       saldo spot su quella coin, non c'e' piu' nulla da proteggere --
-      l'alert viene rimosso per davvero stavolta."""
+      l'alert viene rimosso per davvero stavolta.
+
+    now_ms (opzionale) mostra la data/ora in fondo al messaggio (vedi
+    format_display_datetime e format_alert_triggered_message, stessa
+    logica: la data non compare piu' nel titolo dell'alert)."""
     coin = alert.get("coin", "?")
     threshold = alert.get("price", 0)
     coin_link = ticker_mention(coin, kind=alert_ticker_kind(alert))
@@ -971,7 +1010,10 @@ def format_alert_cleared_message(alert: dict, current_price: float, reason: str)
         verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
         head = f"✅ Allarme rientrato: {coin_link} e' {verso_rientro} {threshold:g}."
         footer = "(l'alert resta attivo: ti avviso di nuovo se la soglia scatta ancora)"
-    return f"{head}\nPrezzo attuale: {current_price:g}\n{footer}"
+    lines = [head, f"Prezzo attuale: {current_price:g}", footer]
+    if now_ms is not None:
+        lines.append(f"🕐 {format_display_datetime(now_ms)}")
+    return "\n".join(lines)
 
 
 def load_state(path: str) -> dict:
@@ -1040,23 +1082,14 @@ def format_order_message(fills: list) -> str:
     return "\n".join(lines)
 
 
-def format_update_header(now_ms: int, kind: str = "orders", coin: str | None = None, coin_kind: str = "perp") -> str:
-    """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill/nuovi
-    TWAP, alert, riepilogo posizioni), sia nel titolo che nel colore della
-    barra distinta per categoria in base a `kind` ("orders"/"alerts"/
-    "positions" -- vedi UPDATE_HEADER_TITLE_BY_KIND e
-    UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
-    senza leggere il resto del messaggio. Mostrata nel fuso orario
+def format_display_datetime(now_ms: int) -> str:
+    """Formatta now_ms come "<giorno> <mese> <anno>, ore HH:MM" nel fuso
     DISPLAY_TIMEZONE quando disponibile, altrimenti in UTC (mai un crash
-    per questo).
-
-    Per kind="alerts", se `coin` e' passato il titolo diventa "...su:
-    <TICKER>" (con `coin` reso come link cliccabile via ticker_mention,
-    kind=coin_kind) cosi' si capisce subito a quale coin si riferisce
-    l'alert senza dover aprire il messaggio -- utile perche' con piu'
-    alert attivi contemporaneamente altrimenti si distinguerebbero solo
-    dal testo sottostante. Per gli altri kind (o se coin non e' passato)
-    il comportamento resta quello di prima."""
+    per questo, vedi anche format_update_header/is_quiet_hours che usano
+    la stessa logica di fallback). Usata sia per il titolo delle notifiche
+    non-alert (vedi format_update_header) sia nel corpo dei messaggi di
+    alert, dove la data non compare piu' nel titolo (vedi
+    format_alert_triggered_message/format_alert_cleared_message)."""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromtimestamp(now_ms / 1000, tz=ZoneInfo(DISPLAY_TIMEZONE))
@@ -1065,14 +1098,57 @@ def format_update_header(now_ms: int, kind: str = "orders", coin: str | None = N
         dt = datetime.utcfromtimestamp(now_ms / 1000)
         tz_label = " UTC"
     mese = ITALIAN_MONTHS[dt.month - 1]
+    return f"{dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}"
+
+
+def format_update_header(
+    now_ms: int,
+    kind: str = "orders",
+    coin: str | None = None,
+    coin_kind: str = "perp",
+    alert_direction: str | None = None,
+    alert_threshold=None,
+    alert_current_price=None,
+) -> str:
+    """Intestazione mandata in cima a ogni notifica AUTOMATICA (fill/nuovi
+    TWAP, alert, riepilogo posizioni), sia nel titolo che nel colore della
+    barra distinta per categoria in base a `kind` ("orders"/"alerts"/
+    "positions" -- vedi UPDATE_HEADER_TITLE_BY_KIND e
+    UPDATE_HEADER_BAR_BY_KIND) cosi' si riconoscono a colpo d'occhio anche
+    senza leggere il resto del messaggio.
+
+    Per kind="orders"/"positions" il titolo include anche la data/ora
+    (vedi format_display_datetime), nel fuso DISPLAY_TIMEZONE quando
+    disponibile (altrimenti UTC).
+
+    Per kind="alerts", se `coin` e' passato il titolo mostra invece
+    ticker (link cliccabile via ticker_mention, kind=coin_kind), soglia
+    dell'alert e prezzo attuale -- es. "🕐 Aggiornamento Alerts: BTC sotto
+    60000 (attuale: 59300)" -- per capire subito, senza aprire il
+    messaggio, a quale coin si riferisce l'alert e quanto manca/quanto ha
+    superato la soglia; utile soprattutto con piu' alert attivi
+    contemporaneamente. La data non e' essenziale in questo caso e non
+    compare nel titolo (resta comunque nel corpo del messaggio, vedi
+    format_alert_triggered_message/format_alert_cleared_message). Se
+    `coin` non e' passato (o per gli altri kind) si ricade sul titolo
+    semplice con data."""
     title = UPDATE_HEADER_TITLE_BY_KIND.get(kind, UPDATE_HEADER_TITLE_BY_KIND["orders"])
-    if kind == "alerts" and coin:
-        title = f"{title} su: {ticker_mention(coin, kind=coin_kind)}"
     bar = UPDATE_HEADER_BAR_BY_KIND.get(kind, UPDATE_HEADER_BAR_ORDERS)
-    return (
-        f"{title} — {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}{tz_label}\n"
-        f"{bar}"
-    )
+    if kind == "alerts" and coin:
+        detail_parts = [ticker_mention(coin, kind=coin_kind)]
+        verso = {"below": "sotto", "above": "sopra"}.get(alert_direction)
+        if verso and alert_threshold is not None:
+            try:
+                detail_parts.append(f"{verso} {float(alert_threshold):g}")
+            except (TypeError, ValueError):
+                pass
+        if alert_current_price is not None:
+            try:
+                detail_parts.append(f"(attuale: {float(alert_current_price):g})")
+            except (TypeError, ValueError):
+                pass
+        return f"{title}: {' '.join(detail_parts)}\n{bar}"
+    return f"{title} — {format_display_datetime(now_ms)}\n{bar}"
 
 
 def is_quiet_hours(now_ms: int) -> bool:
@@ -1198,9 +1274,22 @@ def format_positions_message(
     spot_state: dict | None = None,
     spot_meta: dict | None = None,
 ) -> str:
-    """Risposta al comando /positions: posizioni PERPS aperte (con leva e,
-    quando stimabile, il valore nozionale in USDC -- vedi
-    get_position_value_usd, lo stesso usato per il filtro "polvere" e per
+    """Risposta al comando /positions (e contenuto del riepilogo
+    automatico ogni POSITIONS_RECAP_INTERVAL_HOURS ore, vedi main): in
+    testa, "💵 Valore nozionale posizioni aperte" (somma di
+    get_position_value_usd su TUTTE le posizioni aperte, anche quelle
+    "polvere" nascoste sotto -- cosi' il totale riflette l'intero
+    portafoglio anche se una singola posizione non compare nell'elenco;
+    se anche una sola posizione non ha un valore stimabile il totale lo
+    segnala esplicitamente invece di darlo per buono) affiancato, se
+    spot_state e' passato, da "💰 Saldo USDC spot" (vedi
+    get_spot_usdc_balance) per un confronto immediato tra i due --
+    perps e spot sono conti DISTINTI su Hyperliquid (il secondo non e'
+    "coperto" dal primo, anche se in pratica tende a muoversi insieme per
+    via di depositi/prelievi legati al trading), quindi i due valori NON
+    coincidono in generale. Poi le posizioni PERPS aperte (con leva e,
+    quando stimabile, il valore nozionale in
+    USDC -- stessa stima usata per il filtro "polvere" e per
     l'ordinamento sotto) con entry vs prezzo attuale, PnL, prezzo di
     liquidazione ed eventuali stop/TP collegati (dedotti dagli ordini
     aperti reduce-only con trigger), seguite -- se spot_state e' passato
@@ -1232,8 +1321,30 @@ def format_positions_message(
     interpretare con sicurezza invece di mostrare dati indovinati."""
     perps_ok = isinstance(clearinghouse_state, dict) and isinstance(clearinghouse_state.get("assetPositions"), list)
     all_positions = extract_open_positions(clearinghouse_state) if perps_ok else []
-    positions_with_value = [(p, get_position_value_usd(p, mids)) for p in all_positions]
-    positions_with_value = [(p, v) for p, v in positions_with_value if v is None or v >= MIN_VALUE_USD_TO_SHOW]
+    # Valore stimato di TUTTE le posizioni aperte (anche quelle "polvere"
+    # che verranno nascoste sotto -- il totale del portafoglio deve
+    # restare corretto anche se una singola posizione non viene elencata).
+    all_positions_with_value = [(p, get_position_value_usd(p, mids)) for p in all_positions]
+    total_value_usd = sum(v for _, v in all_positions_with_value if v is not None)
+    any_unknown_value = any(v is None for _, v in all_positions_with_value)
+
+    def total_value_line():
+        # None se non c'e' nessuna posizione aperta (niente da totalizzare).
+        if not all_positions:
+            return None
+        line = f"💵 Valore nozionale posizioni aperte: {total_value_usd:g} USDC"
+        if any_unknown_value:
+            line += " (una o piu' posizioni senza valore stimabile non incluse nel totale)"
+        # Confronto col saldo USDC del conto SPOT (conto distinto dai
+        # perps -- vedi get_spot_usdc_balance): mostrato solo se
+        # spot_state e' stato passato, altrimenti non sapremmo dire se e'
+        # zero o semplicemente non disponibile.
+        if spot_state is not None:
+            usdc_balance = get_spot_usdc_balance(spot_state)
+            line += f"\n💰 Saldo USDC spot: {(usdc_balance or 0.0):g} USDC"
+        return line
+
+    positions_with_value = [(p, v) for p, v in all_positions_with_value if v is None or v >= MIN_VALUE_USD_TO_SHOW]
     # Valore nozionale USDC decrescente; le posizioni di cui non si riesce a
     # stimare il valore vanno in fondo (non essendo confrontabili con le
     # altre, ma senza per questo perderle -- restano comunque nell'elenco).
@@ -1250,6 +1361,9 @@ def format_positions_message(
                 f"📋 Nessuna posizione aperta sopra i {MIN_VALUE_USD_TO_SHOW:g} USDC "
                 f"({hidden_count} posizione/i sotto soglia non mostrata/e)."
             )
+            tv_line = total_value_line()
+            if tv_line:
+                perps_block += f"\n{tv_line}"
         else:
             perps_block = "📋 Nessuna posizione aperta al momento."
         return f"{perps_block}\n\n{spot_block}" if spot_block else perps_block
@@ -1263,6 +1377,9 @@ def format_positions_message(
             orders_by_coin[coin].append(o)
 
     blocks = ["📋 Posizioni aperte:"]
+    tv_line = total_value_line()
+    if tv_line:
+        blocks[0] += f"\n{tv_line}"
     for pos, value_usd in positions_with_value:
         coin = pos.get("coin", "?")
         try:
@@ -1854,21 +1971,27 @@ def main() -> int:
                 if position is None and spot_balance is None:
                     outgoing.append(
                         {
-                            "text": format_alert_cleared_message(alert, current_price, "holding_closed"),
+                            "text": format_alert_cleared_message(alert, current_price, "holding_closed", now_ms=now_ms),
                             "on_success": make_alert_remove_cb(alert.get("id")),
                             "kind": "alerts",
                             "coin": coin,
                             "coin_kind": alert_ticker_kind(alert),
+                            "alert_direction": alert.get("direction"),
+                            "alert_threshold": threshold,
+                            "alert_current_price": current_price,
                         }
                     )
                 elif not condition_met:
                     outgoing.append(
                         {
-                            "text": format_alert_cleared_message(alert, current_price, "recovered"),
+                            "text": format_alert_cleared_message(alert, current_price, "recovered", now_ms=now_ms),
                             "on_success": make_alert_rearm_cb(alert),
                             "kind": "alerts",
                             "coin": coin,
                             "coin_kind": alert_ticker_kind(alert),
+                            "alert_direction": alert.get("direction"),
+                            "alert_threshold": threshold,
+                            "alert_current_price": current_price,
                         }
                     )
                 else:
@@ -1892,11 +2015,15 @@ def main() -> int:
                                     urgent=urgent,
                                     urgent_deviation_pct=alert_urgent_deviation_pct,
                                     spot_balance=spot_balance,
+                                    now_ms=now_ms,
                                 ),
                                 "on_success": make_alert_reset_counter_cb(alert),
                                 "kind": "alerts",
                                 "coin": coin,
                                 "coin_kind": alert_ticker_kind(alert),
+                                "alert_direction": alert.get("direction"),
+                                "alert_threshold": threshold,
+                                "alert_current_price": current_price,
                             }
                         )
                     else:
@@ -1912,22 +2039,31 @@ def main() -> int:
                     outgoing.append(
                         {
                             "text": format_alert_triggered_message(
-                                alert, current_price, position, repeated=False, spot_balance=spot_balance
+                                alert, current_price, position, repeated=False, spot_balance=spot_balance,
+                                now_ms=now_ms,
                             ),
                             "on_success": make_alert_mark_active_cb(alert),
                             "kind": "alerts",
                             "coin": coin,
                             "coin_kind": alert_ticker_kind(alert),
+                            "alert_direction": alert.get("direction"),
+                            "alert_threshold": threshold,
+                            "alert_current_price": current_price,
                         }
                     )
                 else:
                     outgoing.append(
                         {
-                            "text": format_alert_triggered_message(alert, current_price, None, repeated=False),
+                            "text": format_alert_triggered_message(
+                                alert, current_price, None, repeated=False, now_ms=now_ms
+                            ),
                             "on_success": make_alert_remove_cb(alert.get("id")),
                             "kind": "alerts",
                             "coin": coin,
                             "coin_kind": alert_ticker_kind(alert),
+                            "alert_direction": alert.get("direction"),
+                            "alert_threshold": threshold,
+                            "alert_current_price": current_price,
                         }
                     )
 
@@ -1982,7 +2118,13 @@ def main() -> int:
                 held_count += 1
                 continue
             separator = format_update_header(
-                now_ms, item.get("kind", "orders"), coin=item.get("coin"), coin_kind=item.get("coin_kind", "perp")
+                now_ms,
+                item.get("kind", "orders"),
+                coin=item.get("coin"),
+                coin_kind=item.get("coin_kind", "perp"),
+                alert_direction=item.get("alert_direction"),
+                alert_threshold=item.get("alert_threshold"),
+                alert_current_price=item.get("alert_current_price"),
             )
             try:
                 send_telegram_message(bot_token, chat_id, item["text"], dry_run=dry_run, separator=separator)
