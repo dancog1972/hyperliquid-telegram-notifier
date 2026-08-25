@@ -426,10 +426,15 @@ def fetch_twap_records(wallet: str) -> list:
     """Ritorna la lista (normalizzata, SENZA deduplicare per twap_id --
     vedi build_twap_records_by_id per quello) dei TWAP dell'utente --
     attivi e passati -- con qualunque campo si riesca a interpretare in
-    modo affidabile: twap_id, coin, side, total_sz (size target), minutes
-    (durata), status, status_raw, start_ms, record_time_ms, trigger (vedi
-    extract_twap_trigger_info -- il prezzo soglia per un TWAP con status
-    "waitingForTrigger", None per un TWAP senza trigger di prezzo).
+    modo affidabile: twap_id, coin, side, total_sz (size target),
+    executed_sz/executed_ntl (size/nozionale eseguiti finora -- per il
+    record piu' recente di un TWAP concluso, vedi build_twap_records_by_id,
+    questi sono gia' i valori FINALI riportati dall'API stessa, piu'
+    affidabili di twap_progress se il bot non ha osservato ogni singola
+    esecuzione), minutes (durata), status, status_raw, start_ms,
+    record_time_ms, trigger (vedi extract_twap_trigger_info -- il prezzo
+    soglia per un TWAP con status "waitingForTrigger", None per un TWAP
+    senza trigger di prezzo).
 
     SCHEMA CONFERMATO (non piu' solo ipotizzato -- verificato dall'utente
     interrogando direttamente l'endpoint "twapHistory" con il proprio
@@ -527,6 +532,7 @@ def fetch_twap_records(wallet: str) -> list:
                     "side": state.get("side"),
                     "total_sz": state.get("sz"),
                     "executed_sz": state.get("executedSz"),
+                    "executed_ntl": state.get("executedNtl"),
                     "minutes": state.get("minutes"),
                     "status": status,
                     "status_raw": status_raw,
@@ -1584,6 +1590,57 @@ def format_new_twap_message(record: dict, triggered: bool = False, spot_meta: di
     return "\n".join(lines)
 
 
+def format_twap_closed_message(record: dict, spot_meta: dict | None = None) -> str:
+    """Messaggio inviato quando un TWAP risulta concluso -- status
+    esplicito e riconosciuto come chiuso, vedi is_closed_twap_status
+    (SOLO il livello 1 "confermato" della strategia a piu' livelli usata
+    da /twap -- vedi il blocco di commenti sopra TWAP_EXPIRY_GRACE_MINUTES
+    -- fa scattare questa notifica automatica; le presunzioni via durata
+    scaduta/inattivita' prolungata sono abbastanza affidabili da mostrare
+    su richiesta in /twap ma non abbastanza da giustificare un push
+    automatico che potrebbe rivelarsi sbagliato).
+
+    Usa executed_sz/executed_ntl del record stesso (i valori FINALI
+    riportati direttamente dall'endpoint per la voce piu' recente di
+    quel twap_id, vedi build_twap_records_by_id) invece di twap_progress,
+    cosi' il riepilogo resta corretto anche se il bot non ha osservato
+    ogni singola esecuzione (es. era offline, o il TWAP si e' concluso
+    tra due controlli senza fill intermedi rilevati)."""
+    twap_id = record.get("twap_id")
+    coin_display, coin_kind, linkable = resolve_twap_coin_display(record.get("coin") or "?", spot_meta)
+    side = side_label(record.get("side") or "")
+    coin_txt = ticker_mention(coin_display, kind=coin_kind) if linkable else coin_display
+    status_label = closed_twap_status_label(record.get("status"))
+
+    header = f"{status_label}: TWAP {side} {coin_txt}".rstrip()
+    lines = [header]
+
+    try:
+        executed_sz = float(record.get("executed_sz"))
+    except (TypeError, ValueError):
+        executed_sz = None
+    try:
+        total_sz = float(record.get("total_sz"))
+    except (TypeError, ValueError):
+        total_sz = None
+    if executed_sz is not None:
+        line = f"Eseguito: {executed_sz:g}"
+        if total_sz:
+            pct = min(100.0, executed_sz / total_sz * 100)
+            line += f" di {total_sz:g} ({pct:.1f}%)"
+        lines.append(line)
+
+    try:
+        executed_ntl = float(record.get("executed_ntl"))
+    except (TypeError, ValueError):
+        executed_ntl = None
+    if executed_sz and executed_ntl is not None:
+        lines.append(f"Prezzo medio: {executed_ntl / executed_sz:g}")
+
+    lines.append(f"ID TWAP: {twap_id}")
+    return "\n".join(lines)
+
+
 def format_twap_status_message(
     twap_progress: dict,
     twap_records_by_id: dict,
@@ -2211,6 +2268,18 @@ def main() -> int:
     # si manda la notifica "TWAP triggerato" (vedi piu' sotto) e vengono
     # tolti da qui.
     pending_twap_ids = {str(x) for x in state.get("pending_twap_ids", [])}
+    # TWAP il cui status finale (vedi is_closed_twap_status) e' gia' stato
+    # notificato con "🏁 TWAP concluso" (vedi piu' sotto): evita di
+    # rimandare la stessa notifica ad ogni giro finche' quel record resta
+    # nello storico best-effort. is_closed_notified_first_run distingue il
+    # primissimo avvio di QUESTA funzionalita' (potrebbe attivarsi dopo
+    # che l'utente ha gia' molti TWAP chiusi in storico) da un normale
+    # nuovo TWAP che si chiude da qui in avanti -- stesso principio di
+    # is_very_first_run/known_twap_ids sopra, per non mandare una raffica
+    # di notifiche per tutta la storia passata dell'account alla prima
+    # attivazione.
+    is_closed_notified_first_run = "notified_closed_twap_ids" not in state
+    notified_closed_twap_ids = {str(x) for x in state.get("notified_closed_twap_ids", [])}
     last_update_id = int(state.get("last_update_id", 0) or 0)
     # Lista di alert di prezzo attivi: {"id","coin","direction" ("below"/
     # "above"),"price","created_ms"}. Gestita a richiesta con /alert,
@@ -2430,6 +2499,58 @@ def main() -> int:
                     {
                         "text": format_new_twap_message(record, triggered=True, spot_meta=get_spot_meta()),
                         "on_success": make_twap_triggered_cb(tid_str),
+                        "kind": "orders",
+                    }
+                )
+            elif untriggered_now and tid_str not in pending_twap_ids:
+                # Riconciliazione: un TWAP gia' "known" da prima (quindi
+                # non rientra nel ramo "nuovo" sopra) ma mai finito in
+                # pending_twap_ids -- tipicamente perche' scoperto quando
+                # is_untriggered_twap_status confrontava ancora solo con
+                # "untriggered" invece del valore reale
+                # "waitingForTrigger" (bug corretto il 25/08/2026), quindi
+                # era stato scambiato per gia' partito. Lo si aggiunge ora
+                # silenziosamente (nessun invio Telegram, quindi nessuna
+                # gestione di retry necessaria) cosi' torna visibile nella
+                # sezione "In attesa di trigger" di /twap invece di
+                # restare bloccato in uno stato invisibile per sempre.
+                pending_twap_ids.add(tid_str)
+
+    # --- TWAP conclusi: notifica automatica "🏁 TWAP concluso" -------------
+    # Passaggio separato da is_very_first_run sopra perche' questa
+    # funzionalita' e' stata aggiunta in un secondo momento: un account
+    # che usa gia' il bot da tempo ha gia' "known_twap_ids" popolato (quindi
+    # is_very_first_run e' False) ma non ha ancora "notified_closed_twap_ids"
+    # -- serve quindi un proprio primo-avvio silenzioso indipendente,
+    # altrimenti si manderebbe una notifica per OGNI TWAP gia' concluso in
+    # passato in un colpo solo. Notifica solo lo status "confermato"
+    # (is_closed_twap_status, livello 1 -- vedi format_twap_closed_message),
+    # mai una presunzione via durata scaduta/inattivita': un push automatico
+    # sbagliato sarebbe peggio di uno assente, mentre su /twap (a richiesta)
+    # le presunzioni restano comunque visibili.
+    def make_twap_closed_cb(tid_str):
+        def cb():
+            notified_closed_twap_ids.add(tid_str)
+        return cb
+
+    if is_closed_notified_first_run:
+        for tid_str, record in twap_records_by_id.items():
+            if is_closed_twap_status(record.get("status")):
+                notified_closed_twap_ids.add(tid_str)
+        if twap_records_by_id:
+            print(
+                f"Primo run per la notifica TWAP conclusi: "
+                f"{len(notified_closed_twap_ids)} TWAP gia' chiusi registrati senza notifica."
+            )
+    else:
+        for tid_str, record in twap_records_by_id.items():
+            if tid_str in notified_closed_twap_ids:
+                continue
+            if is_closed_twap_status(record.get("status")):
+                outgoing.append(
+                    {
+                        "text": format_twap_closed_message(record, spot_meta=get_spot_meta()),
+                        "on_success": make_twap_closed_cb(tid_str),
                         "kind": "orders",
                     }
                 )
@@ -2874,8 +2995,16 @@ def main() -> int:
                 print(f"ERRORE invio risposta comando Telegram: {e}", file=sys.stderr)
 
     # Tieni solo i piu' recenti per non far crescere il file all'infinito.
+    # notified_closed_twap_ids e' un set (non una lista in ordine di
+    # scoperta come known_twap_ids_list), ma gli id TWAP di Hyperliquid
+    # sono numerici crescenti (osservato empiricamente), quindi ordinare
+    # per valore numerico e tenere gli ultimi N approssima comunque "i
+    # piu' recenti" invece di un troncamento arbitrario.
     latest_tids = latest_tids[-500:]
     known_twap_ids_list = known_twap_ids_list[-500:]
+    notified_closed_twap_ids_list = sorted(
+        notified_closed_twap_ids, key=lambda x: int(x) if x.isdigit() else -1
+    )[-1000:]
 
     save_state(
         state_file,
@@ -2885,6 +3014,7 @@ def main() -> int:
             "twap_progress": twap_progress,
             "known_twap_ids": known_twap_ids_list,
             "pending_twap_ids": sorted(pending_twap_ids),
+            "notified_closed_twap_ids": notified_closed_twap_ids_list,
             "last_update_id": new_last_update_id,
             "price_alerts": price_alerts,
             "next_alert_id": next_alert_id,
