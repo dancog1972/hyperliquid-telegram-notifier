@@ -426,7 +426,17 @@ def fetch_twap_records(wallet: str) -> list:
     """Ritorna la lista (normalizzata) dei TWAP dell'utente -- attivi e
     passati -- con qualunque campo si riesca a interpretare in modo
     affidabile: twap_id, coin, side, total_sz (size target), minutes
-    (durata), status, start_ms.
+    (durata), status, status_raw, start_ms.
+
+    "status" e' una stringa gia' interpretata quando possibile: gestisce
+    sia il caso in cui l'API restituisce direttamente una stringa (es.
+    "untriggered", "activated"), sia il caso -- comune in API basate su
+    Rust/serde -- in cui uno stato "chiuso" arriva come oggetto "taggato"
+    con una singola chiave, es. {"finished": {...}}, nel qual caso quella
+    chiave viene usata come nome dello status. "status_raw" conserva
+    sempre il valore originale non processato, cosi' se "status" risulta
+    None (forma non riconosciuta) resta comunque visibile per diagnosi
+    (vedi format_twap_status_message) invece di sparire silenziosamente.
 
     Best-effort e best-guess: il nome esatto di questo endpoint e il suo
     schema non sono documentati in modo verificabile, quindi si provano piu'
@@ -453,11 +463,23 @@ def fetch_twap_records(wallet: str) -> list:
             twap_id = record.get("twapId", record.get("id", state.get("twapId")))
             if twap_id is None:
                 continue
-            status = record.get("status")
-            if isinstance(status, dict):
-                status = status.get("status")
-            elif not isinstance(status, str):
-                status = None
+            status_raw = record.get("status")
+            status = None
+            if isinstance(status_raw, str):
+                status = status_raw
+            elif isinstance(status_raw, dict):
+                if isinstance(status_raw.get("status"), str):
+                    status = status_raw.get("status")
+                else:
+                    # Alcune API Rust/serde-based rappresentano un enum come
+                    # oggetto "taggato": {"finished": {...}} invece di una
+                    # stringa semplice -- se il dict ha ESATTAMENTE una
+                    # chiave stringa (e nessun'altra struttura ambigua), si
+                    # usa quella chiave come nome dello status. Mai
+                    # indovinato se ci sono piu' chiavi o zero chiavi.
+                    str_keys = [k for k in status_raw.keys() if isinstance(k, str)]
+                    if len(str_keys) == 1:
+                        status = str_keys[0]
             parsed.append(
                 {
                     "twap_id": twap_id,
@@ -467,6 +489,7 @@ def fetch_twap_records(wallet: str) -> list:
                     "executed_sz": state.get("executedSz"),
                     "minutes": state.get("minutes"),
                     "status": status,
+                    "status_raw": status_raw,
                     "start_ms": record.get("time", state.get("timestamp")),
                 }
             )
@@ -1471,6 +1494,7 @@ def format_twap_status_message(
     # sommarla ad altre).
     per_coin = defaultdict(lambda: defaultdict(lambda: {
         "executed_sz": 0.0, "notional": 0.0, "last_ms": None, "target_sz": 0.0, "has_target": False, "count": 0,
+        "unresolved_status_raws": set(),
     }))
     closed_entries = []
     for key, prog in twap_progress.items():
@@ -1502,6 +1526,14 @@ def format_twap_status_message(
                 agg["has_target"] = True
             except (TypeError, ValueError):
                 pass
+        # Diagnostica: se c'e' un record ma lo status non e' stato
+        # interpretabile (ne' stringa semplice ne' oggetto "taggato" con
+        # una sola chiave -- vedi fetch_twap_records), si mostra il valore
+        # grezzo invece di nasconderlo, cosi' se questo TWAP e' in realta'
+        # gia' chiuso su Hyperliquid ma non lo rileviamo, si vede subito
+        # perche' (utile per segnalarlo e affinare is_closed_twap_status).
+        if record and status is None and record.get("status_raw") not in (None, ""):
+            agg["unresolved_status_raws"].add(repr(record.get("status_raw")))
 
     if not per_coin and not closed_entries:
         blocks.append("▶️ Nessuna esecuzione TWAP ancora aperta.")
@@ -1545,6 +1577,9 @@ def format_twap_status_message(
                 )
             if agg["last_ms"]:
                 coin_lines.append(f"      Ultima esecuzione: {fmt_ts(agg['last_ms'])}")
+            if agg["unresolved_status_raws"]:
+                raws = ", ".join(sorted(agg["unresolved_status_raws"]))
+                coin_lines.append(f"      ⚠️ status non riconosciuto (segnalalo): {raws}")
 
         active_blocks.append("\n".join(coin_lines))
 
