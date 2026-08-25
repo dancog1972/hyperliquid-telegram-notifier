@@ -231,7 +231,7 @@ DEFAULT_ALERT_URGENT_DEVIATION_PCT = 8.0
 # Ogni quante ore mandare in automatico un riepilogo delle posizioni
 # (stesso contenuto della risposta a /positions, incl. saldi spot e
 # filtro "polvere" sulle posizioni perps) senza doverlo chiedere a mano.
-DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS = 4.0
+DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS = 2.0
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento e in cui e'
 # calcolata la fascia notturna qui sotto. Se il database IANA non e'
