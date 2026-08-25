@@ -21,7 +21,7 @@ esecuzioni trovate:
   precedenza). L'eseguito cumulato viene solo accumulato silenziosamente in
   stato; per vederlo si usa il comando Telegram /twap (vedi sotto).
 - Riepilogo posizioni (🕓): automatico ogni
-  POSITIONS_RECAP_INTERVAL_HOURS ore (variabile d'ambiente, default 4) --
+  POSITIONS_RECAP_INTERVAL_HOURS ore (variabile d'ambiente, default 2) --
   stesso contenuto della risposta al comando /positions (posizioni perps
   sopra la soglia "polvere" + saldi spot). Il primo riepilogo parte subito
   al primo avvio (nessuno stato precedente), poi ogni N ore da quello.
@@ -36,11 +36,16 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 effort endpoint storico TWAP non vengono mai
                                 mostrati uno per uno (rischio di superare il
                                 limite di lunghezza di Telegram).
-  /positions                   In testa, il valore NOZIONALE stimato di
-                                TUTTE le posizioni PERPS aperte in USDC
-                                (anche quelle "polvere" sotto, cosi' il
-                                totale riflette l'intero portafoglio)
-                                affiancato dal saldo USDC del conto SPOT
+  /positions                   In testa, il valore NOZIONALE LORDO
+                                stimato di TUTTE le posizioni PERPS
+                                aperte in USDC (long e short sommati in
+                                valore assoluto, senza compensarsi --
+                                anche quelle "polvere" sotto, cosi' il
+                                totale riflette l'intero portafoglio) E
+                                l'ESPOSIZIONE NETTA (long meno short:
+                                positiva se sei net long, negativa se net
+                                short, zero se sei delta-neutrale),
+                                affiancati dal saldo USDC del conto SPOT
                                 per confronto -- sono due conti distinti
                                 su Hyperliquid, quindi in generale NON
                                 coincidono. Poi le posizioni PERPS aperte, ordinate per valore
@@ -704,6 +709,27 @@ def get_position_value_usd(pos: dict, mids: dict):
     return None
 
 
+def get_position_direction_sign(pos: dict):
+    """+1 se la posizione e' LONG (szi > 0), -1 se e' SHORT (szi < 0),
+    altrimenti None (size zero o "szi" non interpretabile -- caso limite,
+    ma il valore nozionale (vedi get_position_value_usd) puo' comunque
+    essere noto anche quando "szi" non lo e', es. se arriva gia' un
+    "positionValue" affidabile senza "szi" leggibile: in quel caso la
+    direzione resta sconosciuta anche se il valore no). Usato da
+    format_positions_message per l'esposizione NETTA (long - short),
+    separata dal valore nozionale LORDO che invece somma sempre i valori
+    assoluti senza compensare long e short tra loro."""
+    try:
+        szi = float(pos.get("szi", 0))
+    except (TypeError, ValueError):
+        return None
+    if szi > 0:
+        return 1
+    if szi < 0:
+        return -1
+    return None
+
+
 def extract_spot_balances(spot_state: dict) -> list:
     """Ritorna i saldi spot non nulli da spotClearinghouseState (schema
     best-effort, non verificabile con certezza da qui -- vedi
@@ -1276,14 +1302,19 @@ def format_positions_message(
 ) -> str:
     """Risposta al comando /positions (e contenuto del riepilogo
     automatico ogni POSITIONS_RECAP_INTERVAL_HOURS ore, vedi main): in
-    testa, "💵 Valore nozionale posizioni aperte" (somma di
-    get_position_value_usd su TUTTE le posizioni aperte, anche quelle
-    "polvere" nascoste sotto -- cosi' il totale riflette l'intero
-    portafoglio anche se una singola posizione non compare nell'elenco;
-    se anche una sola posizione non ha un valore stimabile il totale lo
-    segnala esplicitamente invece di darlo per buono) affiancato, se
-    spot_state e' passato, da "💰 Saldo USDC spot" (vedi
-    get_spot_usdc_balance) per un confronto immediato tra i due --
+    testa, due totali su TUTTE le posizioni aperte (anche quelle
+    "polvere" nascoste sotto -- cosi' riflettono l'intero portafoglio
+    anche se una singola posizione non compare nell'elenco):
+    "💵 Valore nozionale posizioni aperte (lordo)" (somma dei valori
+    assoluti via get_position_value_usd -- long e short NON si
+    compensano, una long da 50k e una short da 50k danno 100k) e
+    "⚖️ Esposizione netta (long − short)" (long positivi, short negativi,
+    sommati -- vedi get_position_direction_sign; le stesse due posizioni
+    danno 0 qui, essendo delta-neutrali). Se anche una sola posizione non
+    ha un valore (o una direzione, per il netto) stimabile, il totale
+    interessato lo segnala esplicitamente invece di darlo per buono.
+    Affiancato, se spot_state e' passato, da "💰 Saldo USDC spot" (vedi
+    get_spot_usdc_balance) per un confronto immediato con il lordo --
     perps e spot sono conti DISTINTI su Hyperliquid (il secondo non e'
     "coperto" dal primo, anche se in pratica tende a muoversi insieme per
     via di depositi/prelievi legati al trading), quindi i due valori NON
@@ -1325,16 +1356,38 @@ def format_positions_message(
     # che verranno nascoste sotto -- il totale del portafoglio deve
     # restare corretto anche se una singola posizione non viene elencata).
     all_positions_with_value = [(p, get_position_value_usd(p, mids)) for p in all_positions]
+    # LORDO: somma dei valori assoluti di ogni posizione (l'esposizione
+    # totale "in gioco", senza compensare long e short tra loro -- una
+    # posizione long da 50k e una short da 50k valgono 100k qui, non 0).
     total_value_usd = sum(v for _, v in all_positions_with_value if v is not None)
     any_unknown_value = any(v is None for _, v in all_positions_with_value)
+    # NETTO: long positivi, short negativi, sommati -- rappresenta la
+    # direzione/esposizione netta del portafoglio (le due posizioni
+    # dell'esempio sopra si compensano e danno 0 qui). Una posizione
+    # esclude dal netto se il valore o la direzione (vedi
+    # get_position_direction_sign) non sono determinabili, anche se
+    # contribuiva al lordo.
+    net_terms = []
+    any_unknown_for_net = False
+    for pos, value in all_positions_with_value:
+        sign = get_position_direction_sign(pos)
+        if value is None or sign is None:
+            any_unknown_for_net = True
+            continue
+        net_terms.append(sign * value)
+    net_value_usd = sum(net_terms)
 
     def total_value_line():
         # None se non c'e' nessuna posizione aperta (niente da totalizzare).
         if not all_positions:
             return None
-        line = f"💵 Valore nozionale posizioni aperte: {total_value_usd:g} USDC"
+        line = f"💵 Valore nozionale posizioni aperte (lordo): {total_value_usd:g} USDC"
         if any_unknown_value:
-            line += " (una o piu' posizioni senza valore stimabile non incluse nel totale)"
+            line += " (una o piu' posizioni senza valore stimabile non incluse)"
+        net_line = f"⚖️ Esposizione netta (long − short): {net_value_usd:+g} USDC"
+        if any_unknown_for_net:
+            net_line += " (una o piu' posizioni escluse: valore o direzione non determinabile)"
+        line += f"\n{net_line}"
         # Confronto col saldo USDC del conto SPOT (conto distinto dai
         # perps -- vedi get_spot_usdc_balance): mostrato solo se
         # spot_state e' stato passato, altrimenti non sapremmo dire se e'
@@ -2070,7 +2123,7 @@ def main() -> int:
     # --- Riepilogo posizioni automatico: stesso contenuto della risposta a
     # /positions (posizioni perps sopra la soglia "polvere" + saldi spot),
     # mandato da solo ogni POSITIONS_RECAP_INTERVAL_HOURS ore (variabile
-    # d'ambiente, default 4) senza doverlo chiedere a mano. Le chiamate di
+    # d'ambiente, default 2) senza doverlo chiedere a mano. Le chiamate di
     # rete necessarie avvengono solo quando e' davvero il momento di
     # mandarlo. Se non e' mai stato mandato (prima volta che lo stato ha
     # questo campo) se ne manda uno subito, per stabilire la base. La
