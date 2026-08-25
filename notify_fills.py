@@ -427,7 +427,9 @@ def fetch_twap_records(wallet: str) -> list:
     vedi build_twap_records_by_id per quello) dei TWAP dell'utente --
     attivi e passati -- con qualunque campo si riesca a interpretare in
     modo affidabile: twap_id, coin, side, total_sz (size target), minutes
-    (durata), status, status_raw, start_ms, record_time_ms.
+    (durata), status, status_raw, start_ms, record_time_ms, trigger (vedi
+    extract_twap_trigger_info -- il prezzo soglia per un TWAP con status
+    "waitingForTrigger", None per un TWAP senza trigger di prezzo).
 
     SCHEMA CONFERMATO (non piu' solo ipotizzato -- verificato dall'utente
     interrogando direttamente l'endpoint "twapHistory" con il proprio
@@ -530,6 +532,7 @@ def fetch_twap_records(wallet: str) -> list:
                     "status_raw": status_raw,
                     "start_ms": start_ms,
                     "record_time_ms": record_time_ms,
+                    "trigger": state.get("trigger"),
                 }
             )
         if parsed:
@@ -1366,15 +1369,50 @@ def is_quiet_hours(now_ms: int) -> bool:
 
 def is_untriggered_twap_status(status) -> bool:
     """True se lo status (grezzo, da fetch_twap_records) indica un TWAP
-    impostato con un trigger di prezzo che NON e' ancora scattato --
-    Hyperliquid lo espone (best-effort, schema non documentato con
-    certezza) come status "untriggered". Confronto case-insensitive e
-    con gli spazi tolti per robustezza; qualunque altro status (incluso
-    None/sconosciuto) e' considerato "gia' attivo", per non rischiare di
-    tenere in sospeso all'infinito un TWAP normale solo perche' lo status
-    non e' quello atteso -- coerente con main(), che notifica subito i
-    TWAP il cui status non e' esplicitamente "untriggered"."""
-    return isinstance(status, str) and status.strip().lower() == "untriggered"
+    impostato con un trigger di prezzo che NON e' ancora scattato.
+
+    Il valore reale e' stato confermato interrogando direttamente
+    l'endpoint "twapHistory" con l'account dell'utente il 25/08/2026:
+    "waitingForTrigger" (NON "untriggered" come ipotizzato inizialmente --
+    quel nome era un'estrapolazione mai verificata, e questo confronto
+    avrebbe quindi sempre fallito silenziosamente contro i dati reali,
+    trattando ogni TWAP con trigger di prezzo come gia' partito appena
+    creato invece di aspettare che scattasse davvero. E' probabilmente la
+    causa di fondo della confusione originale segnalata dall'utente su
+    /twap). "untriggered" resta comunque incluso nel confronto come
+    fallback difensivo, nel caso comparisse in futuro o per altri
+    account. Confronto case-insensitive e con gli spazi tolti per
+    robustezza; qualunque altro status (incluso None/sconosciuto) e'
+    considerato "gia' attivo", per non rischiare di tenere in sospeso
+    all'infinito un TWAP normale solo perche' lo status non e' quello
+    atteso -- coerente con main(), che notifica subito i TWAP il cui
+    status non e' esplicitamente uno di questi."""
+    return isinstance(status, str) and status.strip().lower() in ("waitingfortrigger", "untriggered")
+
+
+def extract_twap_trigger_info(record: dict | None):
+    """Ritorna (prezzo_soglia: float | None, sopra: bool | None) dal
+    campo state.trigger di un record TWAP (vedi fetch_twap_records) --
+    confermato realmente presente il 25/08/2026 come
+    {"trigger": {"px": <stringa>, "above": <bool>}} dentro "state" per un
+    TWAP con status "waitingForTrigger" (per i TWAP senza trigger di
+    prezzo il campo e' semplicemente null). "above" True significa che
+    scatta quando il prezzo SALE sopra "px", False quando SCENDE sotto.
+    Ritorna (None, None) se il campo manca o non e' nella forma attesa
+    (mai indovinato)."""
+    if not isinstance(record, dict):
+        return (None, None)
+    trigger = record.get("trigger")
+    if not isinstance(trigger, dict):
+        return (None, None)
+    try:
+        px = float(trigger.get("px"))
+    except (TypeError, ValueError):
+        return (None, None)
+    above = trigger.get("above")
+    if not isinstance(above, bool):
+        above = None
+    return (px, above)
 
 
 # Status (grezzi, da fetch_twap_records) che indicano un TWAP NON piu'
@@ -1632,6 +1670,10 @@ def format_twap_status_message(
             if record.get("minutes"):
                 line += f" ({record['minutes']} min)"
             line += f" — id {tid_str}"
+            trigger_px, trigger_above = extract_twap_trigger_info(record)
+            if trigger_px is not None:
+                direzione = "sale sopra" if trigger_above else "scende sotto"
+                line += f"\n   scatta quando il prezzo {direzione} {trigger_px:g}"
             pending_lines.append(line)
         blocks.append("\n".join(pending_lines))
 
