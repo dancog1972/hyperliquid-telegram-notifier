@@ -34,15 +34,26 @@ esecuzioni trovate:
   al primo avvio (nessuno stato precedente), poi ogni N ore da quello.
 
 Comandi Telegram (a richiesta, nessun invio automatico):
-  /twap                        Riepilogo TWAP PER COIN/TICKER (un blocco
-                                per coin, BUY e SELL separati -- non un
-                                elenco di ogni singolo ordine TWAP): eseguito
-                                cumulato, prezzo medio, % di completamento se
-                                disponibile, differenza rispetto al prezzo di
-                                mercato attuale. I record grezzi del best-
-                                effort endpoint storico TWAP non vengono mai
-                                mostrati uno per uno (rischio di superare il
-                                limite di lunghezza di Telegram).
+  /twap                        PRIMA i TWAP "⏳ In attesa di trigger"
+                                (impostati con una condizione di prezzo
+                                non ancora scattata -- vedi
+                                is_untriggered_twap_status -- quindi senza
+                                ancora nessuna esecuzione, altrimenti
+                                invisibili qui). POI un riepilogo
+                                "▶️ Attivi/eseguiti" PER COIN/TICKER (un
+                                blocco per coin, BUY e SELL separati -- non
+                                un elenco di ogni singolo ordine TWAP):
+                                eseguito cumulato, prezzo medio, % di
+                                completamento se disponibile, differenza
+                                rispetto al prezzo di mercato attuale. Un
+                                TWAP su una coppia SPOT non "canonica"
+                                mostra il ticker vero del token invece
+                                dell'id posizionale grezzo tipo "@162"
+                                (vedi resolve_twap_coin_display). I record
+                                grezzi del best-effort endpoint storico
+                                TWAP non vengono mai mostrati uno per uno
+                                (rischio di superare il limite di
+                                lunghezza di Telegram).
   /positions                   In testa, il valore NOZIONALE LORDO
                                 stimato di TUTTE le posizioni PERPS
                                 aperte in USDC (long e short sommati in
@@ -564,6 +575,68 @@ def get_price_for_coin(coin: str, mids: dict, spot_meta: dict | None = None):
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+def resolve_spot_ticker_name(raw_coin: str, spot_meta: dict):
+    """Inverso di resolve_spot_mid_key: dato un identificativo di coppia
+    spot come appare gia' nel campo "coin" dei fill/esecuzioni TWAP (es.
+    "@162" per una coppia non "canonica", vedi resolve_spot_mid_key),
+    risale al ticker leggibile del token BASE (es. "CAT") tramite
+    spotMeta. Necessario perche' per lo spot Hyperliquid restituisce i
+    fill/TWAP gia' etichettati con l'id posizionale della coppia, non col
+    ticker del token -- altrimenti illeggibile per l'utente. Ritorna None
+    se non risolvibile (spot_meta assente/malformato, coppia non
+    trovata, o il token base non ha un nome) -- mai un nome indovinato;
+    vedi resolve_twap_coin_display per come il chiamante gestisce
+    l'insuccesso."""
+    if not isinstance(spot_meta, dict) or not raw_coin:
+        return None
+    tokens = spot_meta.get("tokens")
+    universe = spot_meta.get("universe")
+    if not isinstance(tokens, list) or not isinstance(universe, list):
+        return None
+    for pair in universe:
+        if not isinstance(pair, dict) or pair.get("name") != raw_coin:
+            continue
+        pair_tokens = pair.get("tokens")
+        if not isinstance(pair_tokens, list) or not pair_tokens:
+            return None
+        base_index = pair_tokens[0]
+        for t in tokens:
+            if isinstance(t, dict) and t.get("index") == base_index:
+                name = t.get("name")
+                return name if isinstance(name, str) and name else None
+        return None
+    return None
+
+
+def resolve_twap_coin_display(raw_coin, spot_meta: dict | None):
+    """Interpreta il campo "coin" grezzo di un fill/TWAP e ritorna
+    (nome_da_mostrare, kind, linkabile):
+    - ticker perps "normale" (nessun "@" ne' "/" nel valore): ritornato
+      cosi' com'e', kind="perp", linkabile=True -- caso comune, nessuna
+      risoluzione necessaria.
+    - id di coppia spot ("@N", o gia' un nome tipo "TOKEN/USDC") risolto
+      con successo via resolve_spot_ticker_name: (nome_token, "spot",
+      True).
+    - id di coppia spot NON risolto (spot_meta assente o coppia/token non
+      trovati): (raw_coin, "spot", False) -- si mostra comunque il
+      valore grezzo (mai nasconderlo), ma senza renderlo un link
+      cliccabile, perche' un URL costruito sull'id posizionale grezzo
+      punterebbe quasi certamente al mercato sbagliato o a un errore.
+    Usato da format_twap_status_message e format_new_twap_message per
+    evitare di mostrare direttamente identificativi come "@162" senza
+    nessun contesto (vedi anche resolve_spot_mid_key per il problema
+    analogo sui prezzi)."""
+    if not isinstance(raw_coin, str) or not raw_coin:
+        return (raw_coin, "perp", False)
+    looks_like_spot_id = raw_coin.startswith("@") or "/" in raw_coin
+    if not looks_like_spot_id:
+        return (raw_coin, "perp", True)
+    resolved = resolve_spot_ticker_name(raw_coin, spot_meta) if spot_meta else None
+    if resolved:
+        return (resolved, "spot", True)
+    return (raw_coin, "spot", False)
 
 
 def fetch_open_orders(wallet: str) -> list:
@@ -1215,7 +1288,7 @@ def is_untriggered_twap_status(status) -> bool:
     return isinstance(status, str) and status.strip().lower() == "untriggered"
 
 
-def format_new_twap_message(record: dict, triggered: bool = False) -> str:
+def format_new_twap_message(record: dict, triggered: bool = False, spot_meta: dict | None = None) -> str:
     """Messaggio inviato quando un TWAP inizia davvero a eseguire, prima
     ancora che scatti la sua prima slice. Due casi (vedi
     is_untriggered_twap_status/main per come si distinguono):
@@ -1226,15 +1299,20 @@ def format_new_twap_message(record: dict, triggered: bool = False) -> str:
       prezzo (status "untriggered" quando e' stato rilevato per la prima
       volta -- niente notifica in quel momento, dato che non e' ancora
       partito) e che ORA ha superato la soglia ed e' effettivamente
-      partito -- vedi format_twap_pending_trigger_message per la notifica
-      (facoltativa) di quando viene solo impostato, ancora in attesa."""
+      partito.
+
+    spot_meta (opzionale) serve a risolvere il "coin" grezzo quando il
+    TWAP e' su una coppia SPOT non "canonica" (vedi
+    resolve_twap_coin_display): senza, un TWAP spot verrebbe mostrato con
+    un id posizionale illeggibile tipo "@162" invece del ticker."""
     twap_id = record.get("twap_id")
-    coin = record.get("coin") or "?"
+    coin_display, coin_kind, linkable = resolve_twap_coin_display(record.get("coin") or "?", spot_meta)
     side = side_label(record.get("side") or "")
 
     verb = "TWAP triggerato, e' partito" if triggered else "Nuovo TWAP avviato"
     emoji = "🎯" if triggered else "🆕"
-    header = f"{emoji} {verb}: {side} {ticker_mention(coin, kind='perp')}".rstrip()
+    coin_txt = ticker_mention(coin_display, kind=coin_kind) if linkable else coin_display
+    header = f"{emoji} {verb}: {side} {coin_txt}".rstrip()
     total_sz = record.get("total_sz")
     if total_sz is not None:
         try:
@@ -1253,28 +1331,83 @@ def format_new_twap_message(record: dict, triggered: bool = False) -> str:
     return "\n".join(lines)
 
 
-def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mids: dict) -> str:
-    """Risposta al comando /twap: un riepilogo PER TICKER (coin), non un
-    elenco di ogni singolo ordine TWAP. Somma l'eseguito cumulato di tutti
-    i TWAP con esecuzioni note (twap_progress) sulla stessa coin -- BUY e
-    SELL separati, non sommati insieme, per non falsare il totale se ci
-    sono TWAP di direzione opposta sulla stessa coin. I record "raw"
+def format_twap_status_message(
+    twap_progress: dict,
+    twap_records_by_id: dict,
+    mids: dict,
+    pending_twap_ids=None,
+    spot_meta: dict | None = None,
+) -> str:
+    """Risposta al comando /twap: PRIMA i TWAP "⏳ In attesa di trigger"
+    (impostati con una condizione di prezzo, status "untriggered" -- vedi
+    is_untriggered_twap_status/main -- che quindi NON hanno ancora
+    eseguito nulla e altrimenti sarebbero del tutto invisibili qui, dato
+    che non compaiono in twap_progress finche' non partono), POI un
+    riepilogo "▶️ Attivi/eseguiti" PER TICKER (coin), non un elenco di
+    ogni singolo ordine TWAP: somma l'eseguito cumulato di tutti i TWAP
+    con esecuzioni note (twap_progress) sulla stessa coin -- BUY e SELL
+    separati, non sommati insieme, per non falsare il totale se ci sono
+    TWAP di direzione opposta sulla stessa coin. I record "raw"
     dell'endpoint TWAP (fetch_twap_records) sono usati solo per stimare la
     % di completamento quando disponibile, MAI mostrati uno per uno: quel
     best-effort endpoint puo' restituire anche moltissimo storico passato
     e un elenco completo rischierebbe di superare il limite di lunghezza
     di Telegram (vedi anche truncate_for_telegram, comunque una rete di
-    sicurezza aggiuntiva)."""
-    if not twap_progress:
-        return "📊 Nessuna esecuzione TWAP registrata finora."
+    sicurezza aggiuntiva).
 
-    # coin -> side grezzo ("B"/"A") -> aggregato
+    pending_twap_ids (opzionale, vedi main) e' l'insieme degli id TWAP
+    attualmente in attesa di trigger. spot_meta (opzionale) risolve i
+    "coin" grezzi delle coppie SPOT non "canoniche" (vedi
+    resolve_twap_coin_display) cosi' un TWAP spot non compare con un id
+    posizionale illeggibile tipo "@162" invece del ticker."""
+    pending_twap_ids = pending_twap_ids or set()
+
+    def coin_display_text(raw_coin):
+        name, kind, linkable = resolve_twap_coin_display(raw_coin, spot_meta)
+        return ticker_mention(name, kind=kind) if linkable else name
+
+    blocks = []
+
+    if pending_twap_ids:
+        pending_lines = ["⏳ In attesa di trigger:"]
+        for tid_str in sorted(pending_twap_ids):
+            record = twap_records_by_id.get(tid_str)
+            if not record:
+                # Non piu' nell'elenco best-effort (es. storico troncato
+                # dall'endpoint) -- si mostra comunque l'id, senza
+                # inventare il resto.
+                pending_lines.append(f"— id {tid_str}: dettagli non disponibili")
+                continue
+            side = side_label(record.get("side") or "")
+            coin_txt = coin_display_text(record.get("coin") or "?")
+            line = f"— {coin_txt}"
+            if side:
+                line += f": {side}"
+            total_sz = record.get("total_sz")
+            if total_sz is not None:
+                try:
+                    line += f" {float(total_sz):g}"
+                except (TypeError, ValueError):
+                    pass
+            if record.get("minutes"):
+                line += f" ({record['minutes']} min)"
+            line += f" — id {tid_str}"
+            pending_lines.append(line)
+        blocks.append("\n".join(pending_lines))
+
+    if not twap_progress:
+        if not blocks:
+            return "📊 Nessuna esecuzione TWAP registrata finora, e nessun TWAP in attesa di trigger."
+        blocks.append("▶️ Nessuna esecuzione TWAP registrata finora.")
+        return "\n\n".join(blocks)
+
+    # coin grezzo -> side grezzo ("B"/"A") -> aggregato
     per_coin = defaultdict(lambda: defaultdict(lambda: {
         "executed_sz": 0.0, "notional": 0.0, "last_ms": None, "target_sz": 0.0, "has_target": False, "count": 0,
     }))
     for key, prog in twap_progress.items():
-        coin = prog.get("coin") or "?"
-        agg = per_coin[coin][prog.get("side") or ""]
+        raw_coin = prog.get("coin") or "?"
+        agg = per_coin[raw_coin][prog.get("side") or ""]
         agg["executed_sz"] += float(prog.get("executed_sz", 0.0) or 0.0)
         agg["notional"] += float(prog.get("notional", 0.0) or 0.0)
         if prog.get("last_ms"):
@@ -1288,18 +1421,23 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
             except (TypeError, ValueError):
                 pass
 
-    blocks = ["📊 Riepilogo TWAP per coin:"]
-    for coin in sorted(per_coin.keys()):
-        coin_lines = [f"— {ticker_mention(coin, kind='perp')}:"]
+    active_blocks = ["▶️ Attivi/eseguiti per coin:"]
+    # Ordinati per nome mostrato (non per chiave grezza) cosi' un id
+    # posizionale come "@162" non finisce fuori posto rispetto ai ticker
+    # normali solo per via del carattere "@".
+    for raw_coin in sorted(per_coin.keys(), key=lambda c: resolve_twap_coin_display(c, spot_meta)[0]):
+        coin_txt = coin_display_text(raw_coin)
+        coin_display_name = resolve_twap_coin_display(raw_coin, spot_meta)[0]
+        coin_lines = [f"— {coin_txt}:"]
         current_mid = None
-        if coin in mids:
+        if raw_coin in mids:
             try:
-                current_mid = float(mids[coin])
+                current_mid = float(mids[raw_coin])
             except (TypeError, ValueError):
                 current_mid = None
 
-        for side_raw in sorted(per_coin[coin].keys()):
-            agg = per_coin[coin][side_raw]
+        for side_raw in sorted(per_coin[raw_coin].keys()):
+            agg = per_coin[raw_coin][side_raw]
             executed_sz = agg["executed_sz"]
             avg_px = (agg["notional"] / executed_sz) if executed_sz else 0.0
             plurale = "e" if agg["count"] == 1 else "i"
@@ -1309,7 +1447,7 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
             if agg["has_target"] and agg["target_sz"] > 0:
                 pct = min(100.0, executed_sz / agg["target_sz"] * 100)
                 remaining = max(0.0, agg["target_sz"] - executed_sz)
-                coin_lines.append(f"      Completamento: {pct:.1f}% (mancano circa {remaining:g} {coin})")
+                coin_lines.append(f"      Completamento: {pct:.1f}% (mancano circa {remaining:g} {coin_display_name})")
             if current_mid is not None and avg_px:
                 diff = current_mid - avg_px
                 diff_pct = (diff / avg_px * 100) if avg_px else 0
@@ -1320,8 +1458,9 @@ def format_twap_status_message(twap_progress: dict, twap_records_by_id: dict, mi
             if agg["last_ms"]:
                 coin_lines.append(f"      Ultima esecuzione: {fmt_ts(agg['last_ms'])}")
 
-        blocks.append("\n".join(coin_lines))
+        active_blocks.append("\n".join(coin_lines))
 
+    blocks.append("\n\n".join(active_blocks))
     return "\n\n".join(blocks)
 
 
@@ -1927,7 +2066,7 @@ def main() -> int:
                 else:
                     outgoing.append(
                         {
-                            "text": format_new_twap_message(record),
+                            "text": format_new_twap_message(record, spot_meta=get_spot_meta()),
                             "on_success": make_new_twap_cb(tid_str),
                             "kind": "orders",
                         }
@@ -1935,7 +2074,7 @@ def main() -> int:
             elif tid_str in pending_twap_ids and not untriggered_now:
                 outgoing.append(
                     {
-                        "text": format_new_twap_message(record, triggered=True),
+                        "text": format_new_twap_message(record, triggered=True, spot_meta=get_spot_meta()),
                         "on_success": make_twap_triggered_cb(tid_str),
                         "kind": "orders",
                     }
@@ -2314,7 +2453,10 @@ def main() -> int:
                     command = normalize_command(text)
                     print(f"  update {update_id}: testo='{text}' comando riconosciuto='{command or '(nessuno)'}'")
                     if command == "twap":
-                        reply_text = format_twap_status_message(twap_progress, twap_records_by_id, get_mids())
+                        reply_text = format_twap_status_message(
+                            twap_progress, twap_records_by_id, get_mids(),
+                            pending_twap_ids=pending_twap_ids, spot_meta=get_spot_meta(),
+                        )
                     elif command == "positions":
                         ch_state = get_positions_state()
                         open_orders = fetch_open_orders(wallet)
