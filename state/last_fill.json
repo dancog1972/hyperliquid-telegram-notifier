@@ -748,7 +748,7 @@
       "mids_key": "PURR",
       "price": 0.135,
       "runs_since_notify": 0,
-      "triggered": false
+      "triggered": true
     }
   ],
   "seen_tids": [
