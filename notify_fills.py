@@ -12,6 +12,13 @@ esecuzioni trovate:
   target e durata prevista -- se Hyperliquid espone questi dati in modo
   verificabile (best-effort: l'endpoint usato non e' documentato con
   certezza, in caso di dubbio la rilevazione viene semplicemente saltata).
+  ECCEZIONE: un TWAP impostato con un trigger di prezzo parte con status
+  "untriggered" (vedi is_untriggered_twap_status) -- non e' ancora
+  davvero partito, quindi NON genera questa notifica finche' resta in
+  quello stato. Quando poi il trigger scatta si manda invece "🎯 TWAP
+  triggerato, e' partito" (stesso contenuto, vedi
+  format_new_twap_message(triggered=True)) -- vedi main() per come i TWAP
+  "in attesa" vengono tenuti d'occhio tra un controllo e l'altro.
 - Ordini normali (limite, stop, mercato): notifica IMMEDIATA (🚨) ad ogni
   controllo se c'e' qualcosa di nuovo, con l'eseguito TOTALE dell'ordine
   (media prezzo, size totale) e il dettaglio delle singole esecuzioni sotto
@@ -1195,14 +1202,39 @@ def is_quiet_hours(now_ms: int) -> bool:
     return hour >= QUIET_HOURS_START_HOUR or hour < QUIET_HOURS_END_HOUR
 
 
-def format_new_twap_message(record: dict) -> str:
-    """Messaggio inviato non appena un nuovo TWAP viene rilevato (avviato),
-    prima ancora che scatti la sua prima slice."""
+def is_untriggered_twap_status(status) -> bool:
+    """True se lo status (grezzo, da fetch_twap_records) indica un TWAP
+    impostato con un trigger di prezzo che NON e' ancora scattato --
+    Hyperliquid lo espone (best-effort, schema non documentato con
+    certezza) come status "untriggered". Confronto case-insensitive e
+    con gli spazi tolti per robustezza; qualunque altro status (incluso
+    None/sconosciuto) e' considerato "gia' attivo", per non rischiare di
+    tenere in sospeso all'infinito un TWAP normale solo perche' lo status
+    non e' quello atteso -- coerente con main(), che notifica subito i
+    TWAP il cui status non e' esplicitamente "untriggered"."""
+    return isinstance(status, str) and status.strip().lower() == "untriggered"
+
+
+def format_new_twap_message(record: dict, triggered: bool = False) -> str:
+    """Messaggio inviato quando un TWAP inizia davvero a eseguire, prima
+    ancora che scatti la sua prima slice. Due casi (vedi
+    is_untriggered_twap_status/main per come si distinguono):
+    - triggered=False (default): TWAP "normale", senza condizione di
+      trigger (o comunque gia' attivo appena rilevato) -- parte subito,
+      quindi si notifica appena viene rilevato.
+    - triggered=True: TWAP che era stato impostato con un trigger di
+      prezzo (status "untriggered" quando e' stato rilevato per la prima
+      volta -- niente notifica in quel momento, dato che non e' ancora
+      partito) e che ORA ha superato la soglia ed e' effettivamente
+      partito -- vedi format_twap_pending_trigger_message per la notifica
+      (facoltativa) di quando viene solo impostato, ancora in attesa."""
     twap_id = record.get("twap_id")
     coin = record.get("coin") or "?"
     side = side_label(record.get("side") or "")
 
-    header = f"🆕 Nuovo TWAP avviato: {side} {ticker_mention(coin, kind='perp')}".rstrip()
+    verb = "TWAP triggerato, e' partito" if triggered else "Nuovo TWAP avviato"
+    emoji = "🎯" if triggered else "🆕"
+    header = f"{emoji} {verb}: {side} {ticker_mention(coin, kind='perp')}".rstrip()
     total_sz = record.get("total_sz")
     if total_sz is not None:
         try:
@@ -1679,6 +1711,13 @@ def main() -> int:
     is_very_first_run = "known_twap_ids" not in state
     known_twap_ids_list = [str(x) for x in state.get("known_twap_ids", [])]
     known_twap_ids = set(known_twap_ids_list)
+    # TWAP visti con status "untriggered" (vedi is_untriggered_twap_status)
+    # ancora in attesa che il trigger di prezzo scatti: nessuna notifica
+    # "Nuovo TWAP avviato" e' stata mandata per questi (non sono ancora
+    # davvero partiti) -- quando lo status smette di essere "untriggered"
+    # si manda la notifica "TWAP triggerato" (vedi piu' sotto) e vengono
+    # tolti da qui.
+    pending_twap_ids = {str(x) for x in state.get("pending_twap_ids", [])}
     last_update_id = int(state.get("last_update_id", 0) or 0)
     # Lista di alert di prezzo attivi: {"id","coin","direction" ("below"/
     # "above"),"price","created_ms"}. Gestita a richiesta con /alert,
@@ -1840,25 +1879,67 @@ def main() -> int:
             known_twap_ids_list.append(tid_str)
         return cb
 
+    def make_twap_triggered_cb(tid_str):
+        def cb():
+            pending_twap_ids.discard(tid_str)
+        return cb
+
     if is_very_first_run:
         # Primissimo run in assoluto per questa funzionalita': non
         # notificare come "nuovi" i TWAP gia' esistenti/passati, altrimenti
         # si riceve una raffica di notifiche per tutta la storia
         # dell'account. Si "conoscono" silenziosamente e si notificano solo
-        # i TWAP che compariranno da qui in avanti.
-        for tid_str in twap_records_by_id:
+        # i TWAP che compariranno (o che scatteranno, se gia' in attesa di
+        # un trigger di prezzo -- vedi is_untriggered_twap_status) da qui
+        # in avanti.
+        for tid_str, record in twap_records_by_id.items():
             if tid_str not in known_twap_ids:
                 known_twap_ids.add(tid_str)
                 known_twap_ids_list.append(tid_str)
+                if is_untriggered_twap_status(record.get("status")):
+                    pending_twap_ids.add(tid_str)
         if twap_records_by_id:
             print(f"Primo run: {len(twap_records_by_id)} TWAP esistenti registrati senza notifica.")
     else:
+        # --- Nuovi TWAP e TWAP con trigger di prezzo che scatta: alcuni
+        # TWAP su Hyperliquid vengono impostati con un trigger di prezzo e
+        # partono solo quando la soglia viene superata -- fino ad allora
+        # il loro status (best-effort, vedi fetch_twap_records) e'
+        # "untriggered" e NON sono ancora davvero partiti. Percio': un
+        # TWAP nuovo con status "untriggered" viene solo tenuto d'occhio
+        # (pending_twap_ids), SENZA notifica di creazione (non ha ancora
+        # eseguito nulla); quando poi il suo status smette di essere
+        # "untriggered" si manda la notifica "🎯 TWAP triggerato, e'
+        # partito" (vedi format_new_twap_message(triggered=True)). Un
+        # TWAP nuovo senza trigger (o gia' attivo appena rilevato) parte
+        # invece subito: notifica immediata "🆕 Nuovo TWAP avviato", come
+        # sempre. ---
         for tid_str, record in twap_records_by_id.items():
-            if tid_str in known_twap_ids:
-                continue
-            outgoing.append(
-                {"text": format_new_twap_message(record), "on_success": make_new_twap_cb(tid_str), "kind": "orders"}
-            )
+            untriggered_now = is_untriggered_twap_status(record.get("status"))
+            if tid_str not in known_twap_ids:
+                if untriggered_now:
+                    # Nessun invio Telegram qui, quindi nessun retry da
+                    # gestire: la mutazione e' sicura anche fuori da
+                    # on_success.
+                    known_twap_ids.add(tid_str)
+                    known_twap_ids_list.append(tid_str)
+                    pending_twap_ids.add(tid_str)
+                else:
+                    outgoing.append(
+                        {
+                            "text": format_new_twap_message(record),
+                            "on_success": make_new_twap_cb(tid_str),
+                            "kind": "orders",
+                        }
+                    )
+            elif tid_str in pending_twap_ids and not untriggered_now:
+                outgoing.append(
+                    {
+                        "text": format_new_twap_message(record, triggered=True),
+                        "on_success": make_twap_triggered_cb(tid_str),
+                        "kind": "orders",
+                    }
+                )
 
     if last_time_ms is None:
         start_time_ms = now_ms - lookback_minutes * 60 * 1000
@@ -2306,6 +2387,7 @@ def main() -> int:
             "seen_tids": latest_tids,
             "twap_progress": twap_progress,
             "known_twap_ids": known_twap_ids_list,
+            "pending_twap_ids": sorted(pending_twap_ids),
             "last_update_id": new_last_update_id,
             "price_alerts": price_alerts,
             "next_alert_id": next_alert_id,
