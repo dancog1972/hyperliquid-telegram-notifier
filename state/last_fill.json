@@ -339,8 +339,8 @@
     "2144815"
   ],
   "last_positions_recap_ms": 1787674236631,
-  "last_time_ms": 1787675842023,
-  "last_update_id": 603631156,
+  "last_time_ms": 1787675913000,
+  "last_update_id": 603631157,
   "next_alert_id": 25,
   "notified_closed_twap_ids": [
     "1258197",
@@ -738,16 +738,6 @@
       "id": 23,
       "mids_key": "CASHCAT",
       "price": 0.16,
-      "triggered": false
-    },
-    {
-      "coin": "PURR",
-      "created_ms": 1787654595783,
-      "direction": "below",
-      "id": 24,
-      "mids_key": "PURR",
-      "price": 0.135,
-      "runs_since_notify": 0,
       "triggered": false
     }
   ],
@@ -1251,7 +1241,7 @@
     713181208414198,
     677611947053046,
     885299115694078,
-    442021817557048
+    571124461777760
   ],
   "twap_progress": {
     "2115076": {
@@ -1449,9 +1439,9 @@
     },
     "2141749": {
       "coin": "PURR",
-      "executed_sz": 13661.0,
-      "last_ms": 1787675433010,
-      "notional": 1922.5227200000008,
+      "executed_sz": 13748.0,
+      "last_ms": 1787675913000,
+      "notional": 1934.2781600000008,
       "side": "B"
     },
     "2141752": {
