@@ -1288,6 +1288,51 @@ def is_untriggered_twap_status(status) -> bool:
     return isinstance(status, str) and status.strip().lower() == "untriggered"
 
 
+# Status (grezzi, da fetch_twap_records) che indicano un TWAP NON piu'
+# attivo -- confermati via la documentazione pubblica di Hyperliquid
+# (due fonti indipendenti concordano su "activated" per un TWAP in corso
+# e "terminated" per uno interrotto anzitempo, ma discordano sul nome
+# esatto dello stato "eseguito per intero": una lo chiama "completed",
+# l'altra "finished" -- entrambi inclusi qui per sicurezza, dato che non
+# c'e' modo di verificarlo con accesso di rete diretto da questo
+# ambiente). Chiave normalizzata (minuscolo, spazi tolti) -> etichetta
+# umana mostrata da format_twap_status_message (vedi
+# is_closed_twap_status).
+TWAP_CLOSED_STATUS_LABELS = {
+    "completed": "✅ Completato",
+    "finished": "✅ Completato",
+    "terminated": "⛔ Terminato anticipatamente",
+    "canceled": "🚫 Annullato",
+    "cancelled": "🚫 Annullato",
+}
+
+
+def is_closed_twap_status(status) -> bool:
+    """True se lo status (grezzo) indica un TWAP NON piu' attivo (vedi
+    TWAP_CLOSED_STATUS_LABELS) -- completato, terminato anzitempo o
+    annullato. Qualunque altro status (incluso "activated", None, o uno
+    sconosciuto/non documentato) e' considerato "ancora attivo": non
+    avendo conferma che sia chiuso, meglio continuare a mostrarlo come in
+    corso piuttosto che nasconderlo o etichettarlo erroneamente come
+    finito -- coerente con lo stile difensivo del resto del modulo."""
+    return isinstance(status, str) and status.strip().lower() in TWAP_CLOSED_STATUS_LABELS
+
+
+def closed_twap_status_label(status) -> str:
+    """Etichetta umana per uno status chiuso (vedi is_closed_twap_status);
+    presuppone che is_closed_twap_status(status) sia gia' stato
+    verificato True dal chiamante."""
+    return TWAP_CLOSED_STATUS_LABELS.get(status.strip().lower(), "✅ Completato")
+
+
+# Numero massimo di TWAP chiusi (completati/terminati/annullati) mostrati
+# nella sezione dedicata di /twap -- solo i piu' recenti (per ultima
+# esecuzione nota), per non allungare troppo il messaggio; il conteggio
+# di quelli non mostrati viene comunque indicato (niente troncamento
+# silenzioso).
+CLOSED_TWAP_DISPLAY_LIMIT = 5
+
+
 def format_new_twap_message(record: dict, triggered: bool = False, spot_meta: dict | None = None) -> str:
     """Messaggio inviato quando un TWAP inizia davvero a eseguire, prima
     ancora che scatti la sua prima slice. Due casi (vedi
@@ -1347,9 +1392,27 @@ def format_twap_status_message(
     ogni singolo ordine TWAP: somma l'eseguito cumulato di tutti i TWAP
     con esecuzioni note (twap_progress) sulla stessa coin -- BUY e SELL
     separati, non sommati insieme, per non falsare il totale se ci sono
-    TWAP di direzione opposta sulla stessa coin. I record "raw"
-    dell'endpoint TWAP (fetch_twap_records) sono usati solo per stimare la
-    % di completamento quando disponibile, MAI mostrati uno per uno: quel
+    TWAP di direzione opposta sulla stessa coin -- MA SOLO per i TWAP il
+    cui status (da twap_records_by_id, vedi is_closed_twap_status) NON
+    risulta chiuso: un TWAP completato, terminato anticipatamente o
+    annullato non viene piu' incluso qui, altrimenti resterebbe mostrato
+    per sempre come "in corso" (con tanto di %, "mancano circa..." e "vs
+    prezzo attuale") anche molto tempo dopo essere finito -- questo era
+    esattamente il bug segnalato dall'utente (es. un TWAP BTC completato
+    il 24/08 o un TWAP CASHCAT completato il 22/08, entrambi ancora
+    mostrati come attivi). I TWAP chiusi vengono invece elencati in una
+    sezione separata "✅ Completati/terminati di recente", in forma
+    compatta e senza il linguaggio da "ancora in corso" (niente %,
+    "mancano circa", "vs prezzo attuale"), limitata alle poche esecuzioni
+    piu' recenti (vedi CLOSED_TWAP_DISPLAY_LIMIT) per non allungare
+    troppo il messaggio. Se lo status di un TWAP non e' disponibile (id
+    non piu' nell'elenco best-effort dell'endpoint) viene considerato
+    ancora aperto, per non nascondere per errore un TWAP che potrebbe
+    essere ancora in corso.
+
+    I record "raw" dell'endpoint TWAP (fetch_twap_records) sono usati
+    solo per stimare la % di completamento quando disponibile e per
+    determinare lo status aperto/chiuso, MAI mostrati uno per uno: quel
     best-effort endpoint puo' restituire anche moltissimo storico passato
     e un elenco completo rischierebbe di superare il limite di lunghezza
     di Telegram (vedi anche truncate_for_telegram, comunque una rete di
@@ -1401,19 +1464,38 @@ def format_twap_status_message(
         blocks.append("▶️ Nessuna esecuzione TWAP registrata finora.")
         return "\n\n".join(blocks)
 
-    # coin grezzo -> side grezzo ("B"/"A") -> aggregato
+    # coin grezzo -> side grezzo ("B"/"A") -> aggregato -- SOLO per i TWAP
+    # ancora aperti (vedi is_closed_twap_status); quelli chiusi finiscono
+    # invece in closed_entries, una lista piatta (non aggregata: si vuole
+    # mostrare la singola esecuzione con la sua etichetta di stato, non
+    # sommarla ad altre).
     per_coin = defaultdict(lambda: defaultdict(lambda: {
         "executed_sz": 0.0, "notional": 0.0, "last_ms": None, "target_sz": 0.0, "has_target": False, "count": 0,
     }))
+    closed_entries = []
     for key, prog in twap_progress.items():
         raw_coin = prog.get("coin") or "?"
+        record = twap_records_by_id.get(key)
+        status = record.get("status") if record else None
+        if is_closed_twap_status(status):
+            executed_sz = float(prog.get("executed_sz", 0.0) or 0.0)
+            notional = float(prog.get("notional", 0.0) or 0.0)
+            avg_px = (notional / executed_sz) if executed_sz else 0.0
+            closed_entries.append({
+                "raw_coin": raw_coin,
+                "side": prog.get("side") or "",
+                "executed_sz": executed_sz,
+                "avg_px": avg_px,
+                "last_ms": prog.get("last_ms"),
+                "status": status,
+            })
+            continue
         agg = per_coin[raw_coin][prog.get("side") or ""]
         agg["executed_sz"] += float(prog.get("executed_sz", 0.0) or 0.0)
         agg["notional"] += float(prog.get("notional", 0.0) or 0.0)
         if prog.get("last_ms"):
             agg["last_ms"] = max(agg["last_ms"] or 0, prog["last_ms"])
         agg["count"] += 1
-        record = twap_records_by_id.get(key)
         if record and record.get("total_sz") is not None:
             try:
                 agg["target_sz"] += float(record["total_sz"])
@@ -1421,7 +1503,13 @@ def format_twap_status_message(
             except (TypeError, ValueError):
                 pass
 
+    if not per_coin and not closed_entries:
+        blocks.append("▶️ Nessuna esecuzione TWAP ancora aperta.")
+        return "\n\n".join(blocks)
+
     active_blocks = ["▶️ Attivi/eseguiti per coin:"]
+    if not per_coin:
+        active_blocks.append("Nessun TWAP attualmente aperto.")
     # Ordinati per nome mostrato (non per chiave grezza) cosi' un id
     # posizionale come "@162" non finisce fuori posto rispetto ai ticker
     # normali solo per via del carattere "@".
@@ -1461,6 +1549,31 @@ def format_twap_status_message(
         active_blocks.append("\n".join(coin_lines))
 
     blocks.append("\n\n".join(active_blocks))
+
+    if closed_entries:
+        # Piu' recenti prima (per ultima esecuzione nota); quelli senza
+        # last_ms finiscono in coda, non in cima, per non farli sembrare
+        # i piu' recenti.
+        closed_entries.sort(key=lambda e: e["last_ms"] or 0, reverse=True)
+        shown = closed_entries[:CLOSED_TWAP_DISPLAY_LIMIT]
+        hidden_count = len(closed_entries) - len(shown)
+        closed_lines = ["✅ Completati/terminati di recente:"]
+        for entry in shown:
+            coin_txt = coin_display_text(entry["raw_coin"])
+            side_txt = side_label(entry["side"])
+            line = f"— {coin_txt}"
+            if side_txt:
+                line += f": {side_txt}"
+            line += f" {entry['executed_sz']:g} @ media {entry['avg_px']:g}"
+            status_label = closed_twap_status_label(entry["status"])
+            line += f" — {status_label}"
+            if entry["last_ms"]:
+                line += f" ({fmt_ts(entry['last_ms'])})"
+            closed_lines.append(line)
+        if hidden_count > 0:
+            closed_lines.append(f"(+{hidden_count} altri completati/terminati, non mostrati)")
+        blocks.append("\n".join(closed_lines))
+
     return "\n\n".join(blocks)
 
 
