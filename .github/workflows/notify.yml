@@ -15,7 +15,8 @@ permissions:
 concurrency:
   group: hyperliquid-notify
   cancel-in-progress: false
-
+  queue: max
+  
 jobs:
   check-fills:
     runs-on: ubuntu-latest
