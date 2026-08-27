@@ -348,8 +348,8 @@
   ],
   "last_positions_recap_ms": 1787853929245,
   "last_time_ms": 1787867791020,
-  "last_update_id": 603631182,
-  "next_alert_id": 29,
+  "last_update_id": 603631183,
+  "next_alert_id": 30,
   "notified_closed_twap_ids": [
     "1258197",
     "1258577",
@@ -756,6 +756,15 @@
       "mids_key": "PUMP",
       "price": 0.0048,
       "triggered": false
+    },
+    {
+      "coin": "PURR",
+      "created_ms": 1787869278550,
+      "direction": "below",
+      "id": 29,
+      "mids_key": "PURR",
+      "price": 0.14,
+      "triggered": false
     }
   ],
   "seen_tids": [
@@ -829,10 +838,10 @@
     861214337703502,
     442068820995659,
     737073230181969,
+    979246127115858,
     145750105441874,
     439553929604690,
     212968646413906,
-    979246127115858,
     200924752109139,
     773170916806228,
     147682765010516,
