@@ -244,7 +244,7 @@ DEFAULT_LOOKBACK_MINUTES = 15
 # invece di rimandare la notifica ad ogni singolo giro (ogni minuto), la
 # ripetiamo solo ogni N giri, per non intasare la chat. Il primo avviso
 # resta immediato; solo i "promemoria" successivi vengono diradati.
-DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 5
+DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 10
 # Il throttle a N giri sopra vale solo se il prezzo resta "vicino" alla
 # soglia (entro questa percentuale, calcolata rispetto alla soglia
 # stessa): se invece se ne allontana di piu' (condizione piu' severa),
