@@ -13,12 +13,16 @@ esecuzioni trovate:
   verificabile (best-effort: l'endpoint usato non e' documentato con
   certezza, in caso di dubbio la rilevazione viene semplicemente saltata).
   ECCEZIONE: un TWAP impostato con un trigger di prezzo parte con status
-  "untriggered" (vedi is_untriggered_twap_status) -- non e' ancora
-  davvero partito, quindi NON genera questa notifica finche' resta in
-  quello stato. Quando poi il trigger scatta si manda invece "🎯 TWAP
-  triggerato, e' partito" (stesso contenuto, vedi
-  format_new_twap_message(triggered=True)) -- vedi main() per come i TWAP
-  "in attesa" vengono tenuti d'occhio tra un controllo e l'altro.
+  "waitingForTrigger" (vedi is_untriggered_twap_status) -- non e' ancora
+  davvero partito. In questo caso si notifica comunque, ma come
+  aggiornamento "⏳ Nuovo TWAP in attesa di trigger" (barra ARANCIONE,
+  kind="alerts" -- vedi format_new_twap_pending_message), dato che
+  l'ordine e' stato creato ma e' fermo in attesa, non ancora attivo.
+  Quando poi il trigger scatta e il TWAP parte davvero si manda invece
+  "🎯 TWAP triggerato, e' partito" come vero alert "ordine" (barra ROSSA,
+  kind="orders" -- vedi format_new_twap_message(triggered=True)) -- vedi
+  main() per come i TWAP "in attesa" vengono tenuti d'occhio tra un
+  controllo e l'altro.
 - Ordini normali (limite, stop, mercato): notifica IMMEDIATA (🚨) ad ogni
   controllo se c'e' qualcosa di nuovo, con l'eseguito TOTALE dell'ordine
   (media prezzo, size totale) e il dettaglio delle singole esecuzioni sotto
@@ -244,7 +248,7 @@ DEFAULT_LOOKBACK_MINUTES = 15
 # invece di rimandare la notifica ad ogni singolo giro (ogni minuto), la
 # ripetiamo solo ogni N giri, per non intasare la chat. Il primo avviso
 # resta immediato; solo i "promemoria" successivi vengono diradati.
-DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 10
+DEFAULT_ALERT_REPEAT_EVERY_N_RUNS = 5
 # Il throttle a N giri sopra vale solo se il prezzo resta "vicino" alla
 # soglia (entro questa percentuale, calcolata rispetto alla soglia
 # stessa): se invece se ne allontana di piu' (condizione piu' severa),
@@ -1590,6 +1594,43 @@ def format_new_twap_message(record: dict, triggered: bool = False, spot_meta: di
     return "\n".join(lines)
 
 
+def format_new_twap_pending_message(record: dict, spot_meta: dict | None = None) -> str:
+    """Messaggio inviato quando viene rilevato un NUOVO TWAP con un
+    trigger di prezzo non ancora scattato (status "waitingForTrigger",
+    vedi is_untriggered_twap_status): l'ordine e' stato creato ma non ha
+    ancora iniziato ad eseguire davvero. Per questo si notifica come
+    aggiornamento "alerts" (barra arancione, vedi UPDATE_HEADER_BAR_BY_KIND)
+    invece che come "orders" (barra rossa, riservata agli ordini che
+    eseguono davvero) -- l'ordine e' "in attesa", non ancora attivo.
+    Quando poi il trigger scatta e il TWAP parte davvero, si manda invece
+    format_new_twap_message(triggered=True) con kind="orders" (vedi
+    main()), coerente con un vero e proprio alert "ordine".
+
+    spot_meta (opzionale) risolve il "coin" grezzo per le coppie SPOT non
+    "canoniche" (vedi resolve_twap_coin_display)."""
+    twap_id = record.get("twap_id")
+    coin_display, coin_kind, linkable = resolve_twap_coin_display(record.get("coin") or "?", spot_meta)
+    side = side_label(record.get("side") or "")
+    coin_txt = ticker_mention(coin_display, kind=coin_kind) if linkable else coin_display
+    header = f"⏳ Nuovo TWAP in attesa di trigger: {side} {coin_txt}".rstrip()
+    total_sz = record.get("total_sz")
+    if total_sz is not None:
+        try:
+            header += f" — size totale {float(total_sz):g}"
+        except (TypeError, ValueError):
+            pass
+
+    lines = [header]
+    trigger_px, trigger_above = extract_twap_trigger_info(record)
+    if trigger_px is not None:
+        direzione = "sale sopra" if trigger_above else "scende sotto"
+        lines.append(f"Scatta quando il prezzo {direzione} {trigger_px:g}")
+    if record.get("minutes"):
+        lines.append(f"Durata prevista: {record['minutes']} minuti")
+    lines.append(f"ID TWAP: {twap_id}")
+    return "\n".join(lines)
+
+
 def format_twap_closed_message(record: dict, spot_meta: dict | None = None) -> str:
     """Messaggio inviato quando un TWAP risulta concluso -- status
     esplicito e riconosciuto come chiuso, vedi is_closed_twap_status
@@ -2261,12 +2302,13 @@ def main() -> int:
     is_very_first_run = "known_twap_ids" not in state
     known_twap_ids_list = [str(x) for x in state.get("known_twap_ids", [])]
     known_twap_ids = set(known_twap_ids_list)
-    # TWAP visti con status "untriggered" (vedi is_untriggered_twap_status)
-    # ancora in attesa che il trigger di prezzo scatti: nessuna notifica
-    # "Nuovo TWAP avviato" e' stata mandata per questi (non sono ancora
-    # davvero partiti) -- quando lo status smette di essere "untriggered"
-    # si manda la notifica "TWAP triggerato" (vedi piu' sotto) e vengono
-    # tolti da qui.
+    # TWAP visti con status "waitingForTrigger" (vedi
+    # is_untriggered_twap_status) ancora in attesa che il trigger di
+    # prezzo scatti: per questi e' gia' stata mandata la notifica
+    # arancione "⏳ Nuovo TWAP in attesa di trigger" (kind="alerts", non
+    # sono ancora davvero partiti) -- quando lo status smette di essere
+    # "waitingForTrigger" si manda la notifica rossa "TWAP triggerato"
+    # (kind="orders", vedi piu' sotto) e vengono tolti da qui.
     pending_twap_ids = {str(x) for x in state.get("pending_twap_ids", [])}
     # TWAP il cui status finale (vedi is_closed_twap_status) e' gia' stato
     # notificato con "🏁 TWAP concluso" (vedi piu' sotto): evita di
@@ -2446,6 +2488,13 @@ def main() -> int:
             pending_twap_ids.discard(tid_str)
         return cb
 
+    def make_new_twap_pending_cb(tid_str):
+        def cb():
+            known_twap_ids.add(tid_str)
+            known_twap_ids_list.append(tid_str)
+            pending_twap_ids.add(tid_str)
+        return cb
+
     if is_very_first_run:
         # Primissimo run in assoluto per questa funzionalita': non
         # notificare come "nuovi" i TWAP gia' esistenti/passati, altrimenti
@@ -2467,25 +2516,29 @@ def main() -> int:
         # TWAP su Hyperliquid vengono impostati con un trigger di prezzo e
         # partono solo quando la soglia viene superata -- fino ad allora
         # il loro status (best-effort, vedi fetch_twap_records) e'
-        # "untriggered" e NON sono ancora davvero partiti. Percio': un
-        # TWAP nuovo con status "untriggered" viene solo tenuto d'occhio
-        # (pending_twap_ids), SENZA notifica di creazione (non ha ancora
-        # eseguito nulla); quando poi il suo status smette di essere
-        # "untriggered" si manda la notifica "🎯 TWAP triggerato, e'
-        # partito" (vedi format_new_twap_message(triggered=True)). Un
-        # TWAP nuovo senza trigger (o gia' attivo appena rilevato) parte
-        # invece subito: notifica immediata "🆕 Nuovo TWAP avviato", come
-        # sempre. ---
+        # "waitingForTrigger" e NON sono ancora davvero partiti. Percio': un
+        # TWAP nuovo con status "waitingForTrigger" viene notificato subito
+        # ma come aggiornamento "alerts" (barra arancione, vedi
+        # format_new_twap_pending_message) dato che l'ordine e' stato
+        # creato ma e' ancora in attesa, non attivo; quando poi il suo
+        # status smette di essere "waitingForTrigger" si manda la notifica
+        # "🎯 TWAP triggerato, e' partito" come "orders" (barra rossa, vedi
+        # format_new_twap_message(triggered=True)) -- un vero alert
+        # "ordine", dato che a quel punto l'ordine esegue davvero. Un TWAP
+        # nuovo senza trigger (o gia' attivo appena rilevato) parte invece
+        # subito: notifica immediata "🆕 Nuovo TWAP avviato" come "orders",
+        # come sempre. ---
         for tid_str, record in twap_records_by_id.items():
             untriggered_now = is_untriggered_twap_status(record.get("status"))
             if tid_str not in known_twap_ids:
                 if untriggered_now:
-                    # Nessun invio Telegram qui, quindi nessun retry da
-                    # gestire: la mutazione e' sicura anche fuori da
-                    # on_success.
-                    known_twap_ids.add(tid_str)
-                    known_twap_ids_list.append(tid_str)
-                    pending_twap_ids.add(tid_str)
+                    outgoing.append(
+                        {
+                            "text": format_new_twap_pending_message(record, spot_meta=get_spot_meta()),
+                            "on_success": make_new_twap_pending_cb(tid_str),
+                            "kind": "alerts",
+                        }
+                    )
                 else:
                     outgoing.append(
                         {
