@@ -349,7 +349,7 @@
     "2162797"
   ],
   "last_positions_recap_ms": 1788098605141,
-  "last_time_ms": 1788101348061,
+  "last_time_ms": 1788101381023,
   "last_update_id": 603631204,
   "next_alert_id": 32,
   "notified_closed_twap_ids": [
@@ -1252,7 +1252,7 @@
     824288880015350,
     1067865980970997,
     756221667389430,
-    141653007640472
+    950858021127095
   ],
   "twap_progress": {
     "2115076": {
@@ -1513,9 +1513,9 @@
     },
     "2162797": {
       "coin": "LINK",
-      "executed_sz": 4.4,
-      "last_ms": 1788101021011,
-      "notional": 50.7397,
+      "executed_sz": 5.5,
+      "last_ms": 1788101381023,
+      "notional": 63.4403,
       "side": "B"
     }
   }
