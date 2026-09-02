@@ -87,7 +87,14 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 controvalore stimato, con conteggio di
                                 quanti nascosti -- un saldo di cui non si
                                 riesce a stimare il controvalore resta
-                                sempre visibile).
+                                sempre visibile). Se hai coin monitorati
+                                con /emacross, in fondo compare anche un
+                                blocco "EMA Cross monitorati" coi valori
+                                CORRENTI di EMA corta/lunga, la distanza
+                                tra le due e se si stanno avvicinando
+                                (possibile incrocio in arrivo) o
+                                allontanando (vedi
+                                format_ema_cross_summary_block).
   /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
                                 Imposta un alert di prezzo per QUALSIASI
                                 coin quotata su Hyperliquid, sia PERPS che
@@ -116,6 +123,26 @@ Comandi Telegram (a richiesta, nessun invio automatico):
   /delalert <id>                Rimuove un alert (l'id si vede con /alerts).
                                 La conferma include anche l'elenco
                                 aggiornato degli alert rimasti attivi.
+  /emacross <COIN>              Monitora l'incrocio EMA (vedi
+                                EMA_CROSS_SHORT_PERIOD/EMA_CROSS_LONG_PERIOD/
+                                EMA_CROSS_INTERVAL -- fissi: 8/30, candela
+                                giornaliera) su un coin: notifica quando
+                                l'EMA corta incrocia quella lunga, sia al
+                                ribasso ("📉 EMA Cross ribassista") che al
+                                rialzo ("📈 EMA Cross rialzista"), calcolato
+                                sull'ultima candela giornaliera -- CHIUSA
+                                oppure quella ODIERNA ancora in corso (vedi
+                                compute_ema_cross_status). Ricontrollato al
+                                massimo ogni EMA_CROSS_CHECK_INTERVAL_HOURS
+                                ore per coin (default 8, non ad ogni
+                                singolo giro -- vedi
+                                DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS).
+                                Nessuna notifica al
+                                momento dell'aggiunta, anche se le due EMA
+                                sono gia' incrociate in quel momento: si
+                                notifica solo il PROSSIMO vero incrocio.
+  /emacrosses                   Elenca i coin monitorati per l'EMA Cross.
+  /delemacross <COIN>           Rimuove un coin dal monitoraggio EMA Cross.
 I comandi vengono letti tramite polling (Telegram getUpdates) alla stessa
 frequenza con cui gira lo script: la risposta arriva quindi al PROSSIMO
 controllo programmato, non istantaneamente (fino a qualche minuto di
@@ -221,6 +248,15 @@ Variabili opzionali:
                          quanti minuti indietro guardare (default: 15).
                          Evita di notificare tutta la storia del wallet al
                          primo run.
+  EMA_CROSS_CHECK_INTERVAL_HOURS
+                         Ogni quante ore (per coin monitorato con
+                         /emacross) ricontrollare davvero l'EMA Cross
+                         invece di saltare il giro (default: 8 -- vedi
+                         DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS: il calcolo
+                         include anche la candela odierna ancora in corso,
+                         quindi ricalcolarlo ad ogni singolo giro da ~1
+                         minuto reintrodurrebbe lo "sfarfallio" per
+                         l'oscillazione di prezzo infragiornaliera).
 """
 
 import html
@@ -259,6 +295,39 @@ DEFAULT_ALERT_URGENT_DEVIATION_PCT = 8.0
 # (stesso contenuto della risposta a /positions, incl. saldi spot e
 # filtro "polvere" sulle posizioni perps) senza doverlo chiedere a mano.
 DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS = 2.0
+
+# Alert "EMA Cross" (/emacross, vedi compute_ema_cross_status): periodi
+# fissi (corta/lunga) e interval delle candele usate. Su richiesta
+# dell'utente: EMA 8 (corta) / 30 (lunga), candela GIORNALIERA -- non
+# ancora configurabili per-coin, uguali per tutti i coin monitorati.
+EMA_CROSS_SHORT_PERIOD = 8
+EMA_CROSS_LONG_PERIOD = 30
+EMA_CROSS_INTERVAL = "1d"
+# Storico extra (in numero di candele) scaricato oltre al minimo
+# strettamente necessario (EMA_CROSS_LONG_PERIOD candele chiuse): il seed
+# iniziale dell'EMA (una semplice media aritmetica, vedi
+# compute_ema_series) introduce un bias che si affievolisce mano a mano
+# che arrivano nuovi valori, quindi si scarica piu' storico di quanto
+# minimo indispensabile per un valore piu' stabile -- pratica standard
+# per l'EMA, non specifica di Hyperliquid.
+EMA_CROSS_LOOKBACK_DAYS = EMA_CROSS_LONG_PERIOD * 5
+# Ogni coin monitorato viene ricontrollato (chiamata candleSnapshot +
+# ricalcolo EMA inclusi) solo se sono passate almeno
+# EMA_CROSS_CHECK_INTERVAL_HOURS ore dall'ultimo controllo (per-coin, vedi
+# "last_checked_ms" in ema_cross_state/main()) -- ricalcolarlo ad ogni
+# singolo giro (lo script gira ogni ~1 minuto) sarebbe lavoro sprecato:
+# stessa chiamata di rete, quasi sempre nessun cambiamento reale. Default
+# 8 ore (2-3 controlli al giorno), scelto apposta su richiesta
+# dell'utente per essere compatibile con l'inclusione della candela
+# ODIERNA ancora in corso nel calcolo (vedi compute_ema_cross_status):
+# con controlli sparsi (2-3 al giorno, non 1440) il rischio di
+# "sfarfallio" per l'oscillazione di prezzo infragiornaliera resta basso,
+# mentre usare anche il prezzo odierno permette di accorgersi di un
+# incrocio in formazione senza aspettare la chiusura della candela
+# giornaliera (fino a quasi 24h di ritardo altrimenti). Un controllo
+# fallito (rete/endpoint) NON fa avanzare il throttle, quindi viene
+# ritentato al giro successivo, non dopo altre 8 ore intere.
+DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS = 8.0
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento e in cui e'
 # calcolata la fascia notturna qui sotto. Se il database IANA non e'
@@ -753,6 +822,129 @@ def fetch_open_orders(wallet: str) -> list:
     return []
 
 
+def fetch_candles(coin: str, interval: str, start_ms: int, end_ms: int) -> list:
+    """Candele OHLCV grezze per un coin (endpoint pubblico "candleSnapshot",
+    formato confermato via documentazione ufficiale/Chainstack -- NON
+    ancora verificato con una chiamata dal vivo in questo ambiente di
+    sviluppo, dato che non ha accesso alla rete Hyperliquid: se dovesse
+    fallire o restituire dati diversi da quanto documentato, segnalalo
+    cosi' si corregge sulla base di dati reali invece che di
+    documentazione. Richiesta: {"type": "candleSnapshot", "req": {"coin",
+    "interval", "startTime", "endTime"}}. Risposta: lista di candele, ognuna
+    con "t"/"T" (apertura/chiusura, ms), "o"/"h"/"l"/"c" (stringhe), "v"
+    (volume), "n" (numero di trade)."""
+    payload = {
+        "type": "candleSnapshot",
+        "req": {"coin": coin, "interval": interval, "startTime": start_ms, "endTime": end_ms},
+    }
+    result = http_post_json(HL_INFO_URL, payload)
+    if not isinstance(result, list):
+        raise RuntimeError(f"Risposta inattesa da Hyperliquid (candleSnapshot): {result!r}")
+    return result
+
+
+def compute_ema_series(values: list, period: int) -> list:
+    """EMA (Exponential Moving Average) allineata alla lista `values`:
+    ritorna una lista della STESSA lunghezza, con None per i primi
+    (period - 1) elementi (dati insufficienti per un valore ancora) e poi
+    il valore EMA per ogni indice successivo. Seed standard: media
+    aritmetica semplice dei primi `period` valori, poi la formula EMA
+    ricorsiva classica (fattore di smoothing k = 2 / (period + 1)) sui
+    valori successivi. Usata sia per l'EMA corta che per quella lunga di
+    /emacross (vedi compute_ema_cross_status)."""
+    n = len(values)
+    result = [None] * n
+    if period <= 0 or n < period:
+        return result
+    k = 2 / (period + 1)
+    seed = sum(values[:period]) / period
+    result[period - 1] = seed
+    prev = seed
+    for i in range(period, n):
+        prev = values[i] * k + prev * (1 - k)
+        result[i] = prev
+    return result
+
+
+def compute_ema_cross_status(
+    coin: str,
+    now_ms: int,
+    short_period: int = EMA_CROSS_SHORT_PERIOD,
+    long_period: int = EMA_CROSS_LONG_PERIOD,
+    interval: str = EMA_CROSS_INTERVAL,
+    lookback_days: int = EMA_CROSS_LOOKBACK_DAYS,
+):
+    """Scarica le candele (fetch_candles) per `coin` e calcola EMA corta e
+    lunga includendo ANCHE la candela ODIERNA, ancora in corso (su
+    richiesta esplicita dell'utente): il suo prezzo di chiusura ("c") e'
+    in realta' l'ultimo prezzo scambiato al momento della chiamata,
+    quindi cambia continuamente finche' il giorno non finisce. Questo e'
+    accettabile SOLO perche' il chiamante (vedi il blocco EMA Cross in
+    main()) ricontrolla ogni coin al massimo ogni
+    EMA_CROSS_CHECK_INTERVAL_HOURS ore (default 8, quindi 2-3 volte al
+    giorno) e non ad ogni singolo giro da ~1 minuto -- con controlli cosi'
+    sparsi il rischio di un falso incrocio per la sola oscillazione
+    infragiornaliera resta contenuto, mentre il vantaggio (accorgersi di
+    un incrocio in formazione senza aspettare la mezzanotte) e' concreto.
+
+    Ritorna None se non ci sono ancora abbastanza candele (chiuse +
+    quella odierna) per calcolare entrambe le EMA (es. token quotato da
+    meno di long_period giorni, o rete/endpoint momentaneamente senza
+    dati), altrimenti (ema_corta, ema_lunga, corta_sopra_lunga,
+    candela_t_ms, candela_chiusa, trend): candela_t_ms e' l'istante di
+    APERTURA (fisso, a differenza del prezzo di chiusura ancora
+    provvisorio) della candela usata per l'ultimo punto, candela_chiusa
+    e' False se e' quella odierna ancora in corso (per distinguerlo nei
+    messaggi, vedi format_ema_cross_message). trend e' "converging" se la
+    distanza tra le due EMA si e' ridotta rispetto al punto precedente
+    della serie (le due medie si stanno avvicinando -- un incrocio
+    potrebbe essere in arrivo), "diverging" se si e' allargata, "flat" se
+    sostanzialmente invariata, None se non c'e' un punto precedente
+    valido con cui confrontare (storico appena sufficiente)."""
+    start_ms = now_ms - lookback_days * 24 * 60 * 60 * 1000
+    candles = fetch_candles(coin, interval, start_ms, now_ms)
+    valid = [c for c in candles if isinstance(c, dict) and isinstance(c.get("t"), (int, float))]
+    valid.sort(key=lambda c: c["t"])
+    closes = []
+    for c in valid:
+        try:
+            closes.append(float(c["c"]))
+        except (TypeError, ValueError):
+            return None
+    if len(closes) < long_period:
+        return None
+    short_series = compute_ema_series(closes, short_period)
+    long_series = compute_ema_series(closes, long_period)
+    idx = len(closes) - 1
+    short_val = short_series[idx]
+    long_val = long_series[idx]
+    if short_val is None or long_val is None:
+        return None
+
+    trend = None
+    if idx - 1 >= long_period - 1:
+        prev_short = short_series[idx - 1]
+        prev_long = long_series[idx - 1]
+        if prev_short is not None and prev_long is not None:
+            prev_gap = abs(prev_short - prev_long)
+            curr_gap = abs(short_val - long_val)
+            # Piccola tolleranza (0.1%) per non etichettare come
+            # "convergenza"/"divergenza" un cambiamento di distanza dovuto
+            # solo al rumore in virgola mobile.
+            if curr_gap < prev_gap * 0.999:
+                trend = "converging"
+            elif curr_gap > prev_gap * 1.001:
+                trend = "diverging"
+            else:
+                trend = "flat"
+
+    last_candle = valid[idx]
+    candle_t_ms = last_candle.get("t")
+    candle_T_ms = last_candle.get("T")
+    candle_is_closed = isinstance(candle_T_ms, (int, float)) and candle_T_ms < now_ms
+    return (short_val, long_val, short_val > long_val, candle_t_ms, candle_is_closed, trend)
+
+
 def fetch_telegram_updates(bot_token: str, offset: int) -> list:
     """Legge i messaggi in arrivo al bot (polling, non webhook) a partire da
     `offset` (update_id gia' processati + 1), cosi' Telegram non li
@@ -1059,13 +1251,17 @@ def format_position_summary(pos: dict, current_price) -> str:
     """Riassunto compatto di una posizione (usato nei messaggi di alert):
     direzione, size, entry vs prezzo attuale, PnL, prezzo di liquidazione.
     Parsing difensivo come nel resto del modulo -- righe omesse quando il
-    dato non e' interpretabile con sicurezza."""
+    dato non e' interpretabile con sicurezza. Icone per leggibilita' a
+    colpo d'occhio (🟢/🔴 in base al segno per vs-entry e PnL, 🎯 per
+    l'entry, ⚠️ per la liquidazione -- stessa convenzione di
+    format_positions_message)."""
     try:
         szi = float(pos.get("szi", 0))
     except (TypeError, ValueError):
         szi = 0.0
     direction = "LONG" if szi > 0 else "SHORT"
-    header = f"Posizione: {direction} {abs(szi):g}"
+    dir_icon = "🟢" if szi > 0 else "🔴"
+    header = f"📌 Posizione: {dir_icon} {direction} {abs(szi):g}"
 
     try:
         entry_px = float(pos.get("entryPx")) if pos.get("entryPx") is not None else None
@@ -1073,13 +1269,14 @@ def format_position_summary(pos: dict, current_price) -> str:
         entry_px = None
     lines = []
     if entry_px is not None:
-        header += f" @ entry {entry_px:g}"
+        header += f" @ 🎯 {entry_px:g}"
         if current_price is not None and entry_px:
             diff_pct = (float(current_price) - entry_px) / entry_px * 100
             if szi < 0:  # short: si guadagna quando il prezzo scende
                 diff_pct = -diff_pct
             segno = "+" if diff_pct >= 0 else ""
-            lines.append(f"vs entry: {segno}{diff_pct:.2f}%")
+            trend_icon = "🟢" if diff_pct >= 0 else "🔴"
+            lines.append(f"{trend_icon} vs entry: {segno}{diff_pct:.2f}%")
     lines.insert(0, header)
 
     try:
@@ -1088,12 +1285,13 @@ def format_position_summary(pos: dict, current_price) -> str:
         unrealized_pnl = None
     if unrealized_pnl is not None:
         segno = "+" if unrealized_pnl >= 0 else ""
-        lines.append(f"PnL non realizzato: {segno}{unrealized_pnl:g} USDC")
+        pnl_icon = "🟢" if unrealized_pnl >= 0 else "🔴"
+        lines.append(f"{pnl_icon} PnL: {segno}{unrealized_pnl:g} USDC")
 
     liq_px = pos.get("liquidationPx")
     if liq_px is not None:
         try:
-            lines.append(f"Prezzo di liquidazione: {float(liq_px):g}")
+            lines.append(f"⚠️ Liquidazione: {float(liq_px):g}")
         except (TypeError, ValueError):
             pass
 
@@ -1111,8 +1309,8 @@ def format_spot_holding_summary(balance: dict, current_price) -> str:
     try:
         total_f = float(total)
     except (TypeError, ValueError):
-        return f"Saldo spot: {total} {coin_link}"
-    line = f"Saldo spot: {total_f:g} {coin_link}"
+        return f"💰 Saldo spot: {total} {coin_link}"
+    line = f"💰 Saldo spot: {total_f:g} {coin_link}"
     if current_price is not None:
         try:
             line += f" (~{total_f * float(current_price):g} USDC)"
@@ -1147,6 +1345,13 @@ def format_alert_triggered_message(
     entrambe. Vedi main() per la logica di stato ("triggered") e
     format_alert_cleared_message per come si ferma.
 
+    Il testo della cadenza (riga "⏱️ ti aggiorno ogni N controlli") e'
+    volutamente ridotto al minimo, su richiesta esplicita dell'utente:
+    niente rispiegazione del funzionamento del throttle/rearm/rimozione
+    ad ogni singolo messaggio (gia' documentato qui, una volta per
+    tutte) -- solo la cadenza, e solo quando repeated=True (il primo
+    avviso non mostra alcuna riga di cadenza).
+
     now_ms (opzionale) mostra la data/ora in fondo al messaggio (vedi
     format_display_datetime): per gli alert la data non compare piu' nel
     titolo (vedi format_update_header, non essenziale li'), quindi resta
@@ -1163,7 +1368,7 @@ def format_alert_triggered_message(
             extra = f" ({alert['pct']}%)"
     header = "🔔 Alert ancora attivo" if repeated else "🔔 Alert scattato"
     coin_link = ticker_mention(coin, kind=alert_ticker_kind(alert))
-    lines = [f"{header}: {coin_link} {verso} {threshold:g}{extra}", f"Prezzo attuale: {current_price:g}"]
+    lines = [f"{header}: {coin_link} {verso} {threshold:g}{extra}", f"💲 Prezzo attuale: {current_price:g}"]
     holding_line = None
     if position is not None:
         holding_line = format_position_summary(position, current_price)
@@ -1171,22 +1376,16 @@ def format_alert_triggered_message(
         holding_line = format_spot_holding_summary(spot_balance, current_price)
     if holding_line is not None:
         lines.append(holding_line)
-        if not repeated:
-            cadenza = "questo e' il primo avviso"
-        elif urgent:
-            cadenza = (
-                f"il prezzo si e' allontanato di oltre il {urgent_deviation_pct:g}% dalla soglia: "
-                f"ti aggiorno ad ogni controllo"
-            )
-        else:
-            cadenza = f"ti aggiorno ogni {repeat_every_n_runs} controlli"
-        lines.append(
-            f"({cadenza} finche' resti in questa condizione; quando rientra ricevi un ultimo avviso e l'alert "
-            "resta attivo, pronto a scattare di nuovo — si disattiva solo se non possiedi più questa coin, "
-            "ne' come posizione ne' come saldo spot)"
-        )
+        # Verbosita' ridotta al minimo su richiesta dell'utente: solo la
+        # cadenza, senza rispiegare ogni volta come funziona il throttle
+        # (gia' documentato una volta per tutte nel docstring qui sopra).
+        if repeated:
+            if urgent:
+                lines.append(f"⏱️ ti aggiorno ad ogni controllo (scostamento oltre {urgent_deviation_pct:g}%)")
+            else:
+                lines.append(f"⏱️ ti aggiorno ogni {repeat_every_n_runs} controlli")
     else:
-        lines.append("(alert rimosso automaticamente — usa /alert per impostarne uno nuovo)")
+        lines.append("(alert rimosso — usa /alert per impostarne uno nuovo)")
     if now_ms is not None:
         lines.append(f"🕐 {format_display_datetime(now_ms)}")
     return "\n".join(lines)
@@ -1218,9 +1417,126 @@ def format_alert_cleared_message(alert: dict, current_price: float, reason: str,
         verso_rientro = "risalito sopra" if alert.get("direction") == "below" else "ridisceso sotto"
         head = f"✅ Allarme rientrato: {coin_link} e' {verso_rientro} {threshold:g}."
         footer = "(l'alert resta attivo: ti avviso di nuovo se la soglia scatta ancora)"
-    lines = [head, f"Prezzo attuale: {current_price:g}", footer]
+    lines = [head, f"💲 Prezzo attuale: {current_price:g}", footer]
     if now_ms is not None:
         lines.append(f"🕐 {format_display_datetime(now_ms)}")
+    return "\n".join(lines)
+
+
+def format_ema_cross_watch_list_message(watch_list: list) -> str:
+    """Risposta al comando /emacrosses: elenco dei coin monitorati per
+    l'alert EMA Cross (vedi try_add_ema_cross_watch/compute_ema_cross_status
+    in main())."""
+    if not watch_list:
+        return (
+            "📊 Nessun coin monitorato per l'EMA Cross.\n"
+            "Per aggiungerne uno: /emacross <COIN> (es. /emacross BTC)"
+        )
+    lines = [
+        f"📊 EMA Cross monitorati (EMA{EMA_CROSS_SHORT_PERIOD}/EMA{EMA_CROSS_LONG_PERIOD}, "
+        f"candela {EMA_CROSS_INTERVAL}):"
+    ]
+    for w in sorted(watch_list, key=lambda x: x.get("coin", "")):
+        coin_link = ticker_mention(w.get("coin"), kind=w.get("coin_kind", "perp"))
+        lines.append(f"— {coin_link}")
+    lines.append("\nPer rimuoverne uno: /delemacross <COIN>")
+    return "\n".join(lines)
+
+
+def format_ema_cross_message(
+    coin: str,
+    direction: str,
+    short_val: float,
+    long_val: float,
+    candle_t_ms: int | None,
+    candle_is_closed: bool = True,
+    coin_kind: str = "perp",
+    short_period: int = EMA_CROSS_SHORT_PERIOD,
+    long_period: int = EMA_CROSS_LONG_PERIOD,
+) -> str:
+    """Notifica automatica mandata quando l'EMA corta e quella lunga di un
+    coin monitorato (/emacross) si incrociano (vedi compute_ema_cross_status
+    -- puo' trattarsi dell'ultima candela giornaliera gia' CHIUSA oppure
+    di quella ODIERNA ancora in corso, vedi candle_is_closed). direction
+    e' "down" (la corta scende sotto la lunga, incrocio ribassista) o
+    "up" (il contrario, rialzista) -- vedi il confronto in main()."""
+    coin_link = ticker_mention(coin, kind=coin_kind)
+    if direction == "down":
+        header = f"📉 EMA Cross ribassista: {coin_link} — EMA{short_period} incrocia sotto EMA{long_period}"
+    else:
+        header = f"📈 EMA Cross rialzista: {coin_link} — EMA{short_period} incrocia sopra EMA{long_period}"
+    lines = [header, f"EMA{short_period}: {short_val:g}  |  EMA{long_period}: {long_val:g}"]
+    if candle_t_ms:
+        if candle_is_closed:
+            lines.append(f"Candela ({EMA_CROSS_INTERVAL}) chiusa del: {fmt_ts(candle_t_ms)}")
+        else:
+            lines.append(f"Candela ({EMA_CROSS_INTERVAL}) odierna, ancora in corso (dal {fmt_ts(candle_t_ms)})")
+    return "\n".join(lines)
+
+
+EMA_CROSS_TREND_LABELS = {
+    "converging": "🔻 convergono (si stanno avvicinando)",
+    "diverging": "🔺 divergono (si stanno allontanando)",
+    "flat": "➡️ stabili",
+}
+
+
+def format_ema_cross_summary_block(snapshots: list) -> str | None:
+    """Blocco 'EMA Cross monitorati' incluso in /positions e nel riepilogo
+    posizioni automatico (vedi format_positions_message, parametro
+    ema_cross_block): per ogni coin monitorato con /emacross mostra i
+    valori CORRENTI (non quelli dell'ultimo controllo throttled per gli
+    alert, vedi EMA_CROSS_CHECK_INTERVAL_HOURS -- qui si vuole lo stato
+    aggiornato al momento della richiesta) di EMA corta/lunga, la
+    distanza tra le due (assoluta e in percentuale della EMA lunga) e se
+    si stanno avvicinando ("converging", un incrocio potrebbe essere in
+    arrivo), allontanando ("diverging") o sono stabili ("flat") rispetto
+    al punto precedente della serie -- vedi compute_ema_cross_status,
+    campo "trend".
+
+    `snapshots` e' una lista di dict gia' calcolati dal chiamante (vedi
+    get_ema_cross_snapshots() in main(): una chiamata di rete per coin
+    monitorato, quindi fatta a monte, non qui) con chiavi
+    "coin"/"coin_kind" sempre presenti, poi "short_val"/"long_val"/
+    "short_above_long"/"trend" in caso di successo oppure "error"
+    (stringa gia' pronta da mostrare) in caso di fallimento per quel
+    coin. Ritorna None se `snapshots` e' vuota (nessun coin monitorato),
+    cosi' il chiamante puo' omettere il blocco del tutto invece di
+    mostrarlo vuoto."""
+    if not snapshots:
+        return None
+    lines = [
+        f"📈 EMA Cross monitorati (EMA{EMA_CROSS_SHORT_PERIOD}/EMA{EMA_CROSS_LONG_PERIOD}, "
+        f"{EMA_CROSS_INTERVAL}):"
+    ]
+    for snap in sorted(snapshots, key=lambda s: s.get("coin", "")):
+        coin_link = ticker_mention(snap.get("coin"), kind=snap.get("coin_kind", "perp"))
+        if snap.get("error"):
+            lines.append(f"— {coin_link}: dati non disponibili ({snap['error']})")
+            continue
+        short_val = snap.get("short_val")
+        long_val = snap.get("long_val")
+        if short_val is None or long_val is None:
+            lines.append(f"— {coin_link}: dati insufficienti")
+            continue
+        posizione = "sopra" if snap.get("short_above_long") else "sotto"
+        gap = short_val - long_val
+        line = (
+            f"— {coin_link}: EMA{EMA_CROSS_SHORT_PERIOD} {short_val:g} {posizione} "
+            f"EMA{EMA_CROSS_LONG_PERIOD} {long_val:g}"
+        )
+        try:
+            pct = abs(gap) / abs(long_val) * 100 if long_val else None
+        except (TypeError, ZeroDivisionError):
+            pct = None
+        if pct is not None:
+            line += f" (distanza: {abs(gap):g}, {pct:.2f}%)"
+        else:
+            line += f" (distanza: {abs(gap):g})"
+        trend_label = EMA_CROSS_TREND_LABELS.get(snap.get("trend"))
+        if trend_label:
+            line += f" — {trend_label}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -1922,6 +2238,7 @@ def format_positions_message(
     mids: dict,
     spot_state: dict | None = None,
     spot_meta: dict | None = None,
+    ema_cross_block: str | None = None,
 ) -> str:
     """Risposta al comando /positions (e contenuto del riepilogo
     automatico ogni POSITIONS_RECAP_INTERVAL_HOURS ore, vedi main): in
@@ -1972,7 +2289,13 @@ def format_positions_message(
     quindi il parsing e' difensivo: gestisce sia il caso in cui i campi
     della posizione siano annidati sotto "position" sia il caso in cui
     siano diretti, e omette in silenzio quello che non riesce a
-    interpretare con sicurezza invece di mostrare dati indovinati."""
+    interpretare con sicurezza invece di mostrare dati indovinati.
+
+    ema_cross_block (opzionale, gia' formattato dal chiamante -- vedi
+    format_ema_cross_summary_block/get_ema_cross_snapshots in main()) e'
+    aggiunto in fondo al messaggio se presente: elenco dei coin
+    monitorati con /emacross, con EMA corta/lunga correnti, distanza e
+    tendenza (convergenza/divergenza)."""
     perps_ok = isinstance(clearinghouse_state, dict) and isinstance(clearinghouse_state.get("assetPositions"), list)
     all_positions = extract_open_positions(clearinghouse_state) if perps_ok else []
     # Valore stimato di TUTTE le posizioni aperte (anche quelle "polvere"
@@ -2042,7 +2365,8 @@ def format_positions_message(
                 perps_block += f"\n{tv_line}"
         else:
             perps_block = "📋 Nessuna posizione aperta al momento."
-        return f"{perps_block}\n\n{spot_block}" if spot_block else perps_block
+        result_blocks = [b for b in (perps_block, spot_block, ema_cross_block) if b]
+        return "\n\n".join(result_blocks)
 
     orders_by_coin = defaultdict(list)
     for o in open_orders:
@@ -2063,12 +2387,13 @@ def format_positions_message(
         except (TypeError, ValueError):
             szi = 0.0
         direction = "LONG" if szi > 0 else "SHORT"
+        dir_icon = "🟢" if szi > 0 else "🔴"
         abs_sz = abs(szi)
 
         leverage = pos.get("leverage")
         lev_value = leverage.get("value") if isinstance(leverage, dict) else leverage
 
-        header = f"— {ticker_mention(coin, kind='perp')}: {direction} {abs_sz:g}"
+        header = f"— {ticker_mention(coin, kind='perp')}: {dir_icon} {direction} {abs_sz:g}"
         if lev_value:
             header += f" ({lev_value}x)"
         if value_usd is not None:
@@ -2088,15 +2413,16 @@ def format_positions_message(
                 current_mid = None
 
         if entry_px is not None:
-            lines.append(f"   Entry: {entry_px:g}")
+            lines.append(f"   🎯 Entry: {entry_px:g}")
             if current_mid is not None and entry_px:
                 diff_pct = (current_mid - entry_px) / entry_px * 100
                 if szi < 0:  # short: si guadagna quando il prezzo scende
                     diff_pct = -diff_pct
                 segno = "+" if diff_pct >= 0 else ""
-                lines.append(f"   Attuale: {current_mid:g} ({segno}{diff_pct:.2f}% vs entry)")
+                trend_icon = "🟢" if diff_pct >= 0 else "🔴"
+                lines.append(f"   💲 Attuale: {current_mid:g} ({trend_icon} {segno}{diff_pct:.2f}% vs entry)")
         elif current_mid is not None:
-            lines.append(f"   Attuale: {current_mid:g}")
+            lines.append(f"   💲 Attuale: {current_mid:g}")
 
         try:
             unrealized_pnl = float(pos.get("unrealizedPnl")) if pos.get("unrealizedPnl") is not None else None
@@ -2104,6 +2430,7 @@ def format_positions_message(
             unrealized_pnl = None
         if unrealized_pnl is not None:
             segno = "+" if unrealized_pnl >= 0 else ""
+            pnl_icon = "🟢" if unrealized_pnl >= 0 else "🔴"
             roe_txt = ""
             roe = pos.get("returnOnEquity")
             if roe is not None:
@@ -2111,12 +2438,12 @@ def format_positions_message(
                     roe_txt = f" ({segno}{float(roe) * 100:.2f}%)"
                 except (TypeError, ValueError):
                     roe_txt = ""
-            lines.append(f"   PnL non realizzato: {segno}{unrealized_pnl:g} USDC{roe_txt}")
+            lines.append(f"   {pnl_icon} PnL: {segno}{unrealized_pnl:g} USDC{roe_txt}")
 
         liq_px = pos.get("liquidationPx")
         if liq_px is not None:
             try:
-                lines.append(f"   Prezzo di liquidazione: {float(liq_px):g}")
+                lines.append(f"   ⚠️ Liquidazione: {float(liq_px):g}")
             except (TypeError, ValueError):
                 pass
 
@@ -2130,9 +2457,9 @@ def format_positions_message(
             order_type = o.get("orderType", "?")
             sz = o.get("sz", "?")
             try:
-                stop_lines.append(f"   Stop/TP: {order_type} trigger @ {float(trigger_px):g} (size {sz})")
+                stop_lines.append(f"   🛡️ Stop/TP: {order_type} trigger @ {float(trigger_px):g} (size {sz})")
             except (TypeError, ValueError):
-                stop_lines.append(f"   Stop/TP: {order_type} (size {sz})")
+                stop_lines.append(f"   🛡️ Stop/TP: {order_type} (size {sz})")
 
         if stop_lines:
             lines.extend(stop_lines)
@@ -2148,6 +2475,9 @@ def format_positions_message(
 
     if spot_block:
         blocks.append(spot_block)
+
+    if ema_cross_block:
+        blocks.append(ema_cross_block)
 
     return "\n\n".join(blocks)
 
@@ -2289,6 +2619,9 @@ def main() -> int:
     positions_recap_interval_hours = float(
         os.environ.get("POSITIONS_RECAP_INTERVAL_HOURS", DEFAULT_POSITIONS_RECAP_INTERVAL_HOURS)
     )
+    ema_cross_check_interval_ms = float(
+        os.environ.get("EMA_CROSS_CHECK_INTERVAL_HOURS", DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS)
+    ) * 3600 * 1000
 
     now_ms = int(time.time() * 1000)
     state = load_state(state_file)
@@ -2333,6 +2666,23 @@ def main() -> int:
     # (vedi POSITIONS_RECAP_INTERVAL_HOURS piu' sotto). None -> nessuno
     # ancora mandato, se ne manda uno subito per stabilire la base.
     last_positions_recap_ms = state.get("last_positions_recap_ms")
+    # Coin monitorati per l'alert EMA Cross (/emacross, /emacrosses,
+    # /delemacross -- vedi try_add_ema_cross_watch): lista di
+    # {"coin","candle_coin","coin_kind"}. "candle_coin" e' la chiave
+    # risolta da passare a candleSnapshot (uguale a "coin" per i perps e
+    # per lo spot "canonico"; per lo spot non canonico e' la stessa
+    # risoluzione best-effort usata per gli alert di prezzo, vedi
+    # resolve_spot_mid_key -- NON verificata dal vivo per candleSnapshot
+    # in questo ambiente di sviluppo).
+    ema_cross_watch = state.get("ema_cross_watch", [])
+    # str(coin) -> {"short_above_long": bool, "last_checked_ms": int}:
+    # ultimo stato noto (all'ultimo controllo effettivo, non ad ogni
+    # giro -- vedi il throttle "last_checked_ms"/EMA_CROSS_CHECK_INTERVAL_HOURS)
+    # per ogni coin monitorato, usato per rilevare un vero incrocio
+    # (cambio di relazione tra un controllo e l'altro) invece di
+    # notificare ad ogni giro finche' la condizione resta vera -- vedi il
+    # blocco EMA Cross piu' sotto in questa funzione.
+    ema_cross_state = state.get("ema_cross_state", {})
 
     # Cache dei prezzi mid: recuperati dalla rete solo se effettivamente
     # serve (un comando /twap o /positions, o un alert attivo), mai in
@@ -2378,6 +2728,48 @@ def main() -> int:
         if spot_meta_cache is None:
             spot_meta_cache = fetch_spot_meta()
         return spot_meta_cache
+
+    # Cache degli "snapshot" EMA Cross (valori CORRENTI, non quelli
+    # dell'ultimo controllo throttled per gli alert -- vedi
+    # EMA_CROSS_CHECK_INTERVAL_HOURS) per il blocco "EMA Cross monitorati"
+    # in /positions e nel riepilogo automatico (vedi
+    # format_ema_cross_summary_block): una chiamata di rete (candleSnapshot)
+    # per coin monitorato, quindi calcolata solo se serve davvero, e
+    # riusata se sia il riepilogo automatico sia il comando /positions
+    # capitano nello stesso giro.
+    ema_cross_snapshots_cache = None
+
+    def get_ema_cross_snapshots() -> list:
+        nonlocal ema_cross_snapshots_cache
+        if ema_cross_snapshots_cache is None:
+            snapshots = []
+            for watch in ema_cross_watch:
+                coin = watch.get("coin")
+                candle_coin = watch.get("candle_coin") or coin
+                coin_kind = watch.get("coin_kind", "perp")
+                if not coin:
+                    continue
+                try:
+                    result = compute_ema_cross_status(candle_coin, now_ms)
+                except Exception as e:
+                    snapshots.append({"coin": coin, "coin_kind": coin_kind, "error": str(e)})
+                    continue
+                if result is None:
+                    snapshots.append({"coin": coin, "coin_kind": coin_kind, "error": "storico insufficiente"})
+                    continue
+                short_val, long_val, short_above_long, _candle_t_ms, _candle_is_closed, trend = result
+                snapshots.append(
+                    {
+                        "coin": coin,
+                        "coin_kind": coin_kind,
+                        "short_val": short_val,
+                        "long_val": long_val,
+                        "short_above_long": short_above_long,
+                        "trend": trend,
+                    }
+                )
+            ema_cross_snapshots_cache = snapshots
+        return ema_cross_snapshots_cache
 
     def find_open_position(coin):
         return next((p for p in extract_open_positions(get_positions_state()) if p.get("coin") == coin), None)
@@ -2455,6 +2847,46 @@ def main() -> int:
         # L'utente vuole rivedere subito l'elenco aggiornato ogni volta che
         # un alert viene aggiunto o modificato, non solo con /alerts.
         return f"{confirmation}\n\n{format_alerts_list_message(price_alerts, mids_now, get_spot_meta())}"
+
+    def try_add_ema_cross_watch(args_text: str) -> str:
+        """Interpreta args_text come "<COIN>" e, se il ticker esiste su
+        Hyperliquid (perps o spot, stessa risoluzione di /alert -- vedi
+        resolve_spot_mid_key), lo aggiunge al monitoraggio EMA Cross
+        (periodi ed interval fissi per ora, vedi EMA_CROSS_SHORT_PERIOD/
+        EMA_CROSS_LONG_PERIOD/EMA_CROSS_INTERVAL). NESSUNA notifica al
+        momento dell'aggiunta, anche se le due EMA sono gia' incrociate in
+        quel momento: lo stato attuale viene solo registrato come
+        riferimento silenzioso (vedi il blocco EMA Cross piu' sotto in
+        main()), cosi' il primo alert arriva solo al PROSSIMO vero
+        incrocio da qui in avanti."""
+        coin = args_text.strip().upper()
+        if not coin:
+            return "⚠️ Usa: /emacross <COIN> (es. /emacross BTC)"
+        if any(w.get("coin") == coin for w in ema_cross_watch):
+            return f"⚠️ {coin} e' gia' monitorato per l'EMA Cross (vedi /emacrosses)."
+
+        mids_now = get_mids()
+        candle_coin = coin
+        coin_kind = "perp"
+        if coin not in mids_now:
+            resolved = resolve_spot_mid_key(coin, get_spot_meta())
+            if resolved is not None and resolved in mids_now:
+                candle_coin = resolved
+                coin_kind = "spot"
+            elif mids_now:
+                return (
+                    f"⚠️ Coin '{coin}' non trovato tra i prezzi correnti Hyperliquid "
+                    f"(ne' perps ne' spot). Controlla il ticker."
+                )
+
+        ema_cross_watch.append({"coin": coin, "candle_coin": candle_coin, "coin_kind": coin_kind})
+        coin_link = ticker_mention(coin, kind=coin_kind)
+        return (
+            f"📊 {coin_link} aggiunto al monitoraggio EMA Cross "
+            f"(EMA{EMA_CROSS_SHORT_PERIOD}/EMA{EMA_CROSS_LONG_PERIOD}, candela {EMA_CROSS_INTERVAL}).\n"
+            f"Ti avviso al prossimo vero incrocio (non ora, anche se le due medie sono gia' incrociate).\n\n"
+            f"{format_ema_cross_watch_list_message(ema_cross_watch)}"
+        )
 
     # Un'unica chiamata di rete (best-effort) usata sia per rilevare TWAP
     # appena avviati sia, piu' sotto, come sorgente per la % di
@@ -2868,6 +3300,89 @@ def main() -> int:
                         }
                     )
 
+    # --- Alert EMA Cross (/emacross, /emacrosses, /delemacross): per ogni
+    # coin monitorato, calcola l'EMA corta e lunga (fisse, vedi
+    # EMA_CROSS_SHORT_PERIOD/EMA_CROSS_LONG_PERIOD/EMA_CROSS_INTERVAL)
+    # INCLUDENDO la candela ODIERNA ancora in corso (vedi
+    # compute_ema_cross_status -- non solo quelle gia' chiuse, su
+    # richiesta esplicita dell'utente). Si notifica SOLO quando la
+    # relazione (corta sopra/sotto la lunga) e' CAMBIATA rispetto
+    # all'ultimo controllo per quel coin -- non ad ogni controllo finche'
+    # resta cosi', a differenza degli alert di prezzo "sticky" che si
+    # ripetono come promemoria (qui non ha senso: un incrocio e' un
+    # evento puntuale, non uno stato da tenere d'occhio finche' dura). La
+    # primissima volta che un coin viene osservato (nessuno stato
+    # precedente per lui, es. appena aggiunto con /emacross) lo stato
+    # attuale viene solo registrato come riferimento silenzioso, senza
+    # notificare -- altrimenti scatterebbe un falso "incrocio" al solo
+    # avvio del monitoraggio.
+    #
+    # THROTTLE: dato che la candela odierna e' inclusa, il valore delle
+    # due EMA puo' in teoria cambiare ad ogni prezzo -- ricalcolarlo
+    # (chiamata candleSnapshot inclusa) ad ogni singolo giro da ~1 minuto
+    # sarebbe pero' eccessivo (e reintrodurrebbe lo "sfarfallio" che
+    # l'esclusione della candela odierna evitava in origine) -- vedi
+    # EMA_CROSS_CHECK_INTERVAL_HOURS/DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS
+    # (default 8 ore, 2-3 controlli al giorno: un compromesso deliberato
+    # tra reattivita' e rumore). Ogni coin monitorato viene quindi
+    # ricontrollato solo se sono passate almeno
+    # EMA_CROSS_CHECK_INTERVAL_HOURS ore dall'ultimo controllo (per-coin,
+    # "last_checked_ms" in ema_cross_state) -- un controllo fallito
+    # (eccezione o dati insufficienti) NON fa avanzare il throttle, quindi
+    # viene ritentato al giro successivo, non dopo altre 8 ore intere. Le
+    # mutazioni avvengono solo via on_success, stessa logica di
+    # retry-al-prossimo-giro del resto (ECCETTO il throttle stesso, che
+    # essendo un semplice "salta se troppo presto" senza invio Telegram
+    # non ha nulla da ritentare). ---
+    def make_ema_cross_cb(coin, short_above_long, checked_ms):
+        def cb():
+            ema_cross_state[coin] = {"short_above_long": short_above_long, "last_checked_ms": checked_ms}
+        return cb
+
+    for watch in ema_cross_watch:
+        coin = watch.get("coin")
+        candle_coin = watch.get("candle_coin") or coin
+        if not coin:
+            continue
+
+        prev = ema_cross_state.get(coin) or {}
+        last_checked_ms = prev.get("last_checked_ms")
+        if last_checked_ms is not None and (now_ms - last_checked_ms) < ema_cross_check_interval_ms:
+            continue  # non ancora ora di ricontrollare questo coin (vedi throttle sopra)
+
+        try:
+            result = compute_ema_cross_status(candle_coin, now_ms)
+        except Exception as e:
+            print(f"AVVISO: impossibile calcolare l'EMA Cross per {coin}: {e}", file=sys.stderr)
+            continue
+        if result is None:
+            continue  # candele ancora insufficienti (o rete/endpoint momentaneamente senza dati)
+        short_val, long_val, short_above_long, candle_t_ms, candle_is_closed, _trend = result
+
+        if "short_above_long" not in prev:
+            # Primo controllo per questo coin: nessun invio Telegram,
+            # quindi mutazione sicura anche fuori da on_success (niente da
+            # ritentare).
+            ema_cross_state[coin] = {"short_above_long": short_above_long, "last_checked_ms": now_ms}
+        elif prev.get("short_above_long") == short_above_long:
+            # Nessun cambiamento rispetto all'ultimo controllo: si
+            # aggiorna solo il timestamp del throttle.
+            ema_cross_state[coin] = {"short_above_long": short_above_long, "last_checked_ms": now_ms}
+        else:
+            direction = "up" if short_above_long else "down"
+            outgoing.append(
+                {
+                    "text": format_ema_cross_message(
+                        coin, direction, short_val, long_val, candle_t_ms,
+                        candle_is_closed=candle_is_closed, coin_kind=watch.get("coin_kind", "perp"),
+                    ),
+                    "on_success": make_ema_cross_cb(coin, short_above_long, now_ms),
+                    "kind": "alerts",
+                    "coin": coin,
+                    "coin_kind": watch.get("coin_kind", "perp"),
+                }
+            )
+
     # --- Riepilogo posizioni automatico: stesso contenuto della risposta a
     # /positions (posizioni perps sopra la soglia "polvere" + saldi spot),
     # mandato da solo ogni POSITIONS_RECAP_INTERVAL_HOURS ore (variabile
@@ -2885,6 +3400,7 @@ def main() -> int:
             get_mids(),
             spot_state=get_spot_state(),
             spot_meta=get_spot_meta(),
+            ema_cross_block=format_ema_cross_summary_block(get_ema_cross_snapshots()),
         )
         outgoing.append(
             {
@@ -2990,7 +3506,8 @@ def main() -> int:
                         ch_state = get_positions_state()
                         open_orders = fetch_open_orders(wallet)
                         reply_text = format_positions_message(
-                            ch_state, open_orders, get_mids(), spot_state=get_spot_state(), spot_meta=get_spot_meta()
+                            ch_state, open_orders, get_mids(), spot_state=get_spot_state(), spot_meta=get_spot_meta(),
+                            ema_cross_block=format_ema_cross_summary_block(get_ema_cross_snapshots()),
                         )
                     elif command == "alert":
                         reply_text = try_create_alert(command_args(text))
@@ -3019,6 +3536,25 @@ def main() -> int:
                                 )
                             else:
                                 reply_text = f"⚠️ Nessun alert trovato con id {alert_id}."
+                    elif command == "emacross":
+                        reply_text = try_add_ema_cross_watch(command_args(text))
+                    elif command == "emacrosses":
+                        reply_text = format_ema_cross_watch_list_message(ema_cross_watch)
+                    elif command in ("delemacross", "rmemacross"):
+                        coin_to_remove = command_args(text).strip().upper()
+                        if not coin_to_remove:
+                            reply_text = "⚠️ Usa: /delemacross <COIN> (vedi la lista con /emacrosses)"
+                        else:
+                            before = len(ema_cross_watch)
+                            ema_cross_watch[:] = [w for w in ema_cross_watch if w.get("coin") != coin_to_remove]
+                            ema_cross_state.pop(coin_to_remove, None)
+                            if len(ema_cross_watch) < before:
+                                reply_text = (
+                                    f"🗑️ {coin_to_remove} rimosso dal monitoraggio EMA Cross.\n\n"
+                                    f"{format_ema_cross_watch_list_message(ema_cross_watch)}"
+                                )
+                            else:
+                                reply_text = f"⚠️ {coin_to_remove} non risulta monitorato (vedi /emacrosses)."
                     elif command == "start":
                         # Solo per mostrare/ripristinare la tastiera con i
                         # pulsanti su una chat senza ancora nessun messaggio.
@@ -3029,7 +3565,11 @@ def main() -> int:
                             "/alerts — alert di prezzo attivi\n"
                             "/newalert — crea un alert in modo guidato\n"
                             "/alert <COIN> <sopra|sotto> <VALORE|VALORE%> — imposta un alert direttamente\n"
-                            "/delalert <id> — rimuove un alert"
+                            "/delalert <id> — rimuove un alert\n"
+                            f"/emacross <COIN> — monitora l'incrocio EMA{EMA_CROSS_SHORT_PERIOD}/"
+                            f"EMA{EMA_CROSS_LONG_PERIOD} (candela {EMA_CROSS_INTERVAL}) su un coin\n"
+                            "/emacrosses — coin monitorati per l'EMA Cross\n"
+                            "/delemacross <COIN> — rimuove un coin dal monitoraggio EMA Cross"
                         )
                     else:
                         continue
@@ -3072,6 +3612,8 @@ def main() -> int:
             "price_alerts": price_alerts,
             "next_alert_id": next_alert_id,
             "last_positions_recap_ms": last_positions_recap_ms,
+            "ema_cross_watch": ema_cross_watch,
+            "ema_cross_state": ema_cross_state,
         },
     )
     return 0
