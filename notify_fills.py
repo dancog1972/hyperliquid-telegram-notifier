@@ -94,10 +94,15 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 tra le due e se si stanno avvicinando
                                 (specificando verso quale incrocio,
                                 ribassista o rialzista, sta andando il
-                                gap) o allontanando (il trend attuale si
+                                gap, PIU' una stima indicativa -- non una
+                                previsione -- di tra quante candele
+                                potrebbe avvenire, con due varianti:
+                                ritmo medio e ritmo piu' recente) o
+                                allontanando (il trend attuale si
                                 rafforza) -- vedi
                                 format_ema_cross_summary_block/
-                                ema_cross_trend_label.
+                                ema_cross_trend_label/
+                                estimate_cross_periods.
   /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
                                 Imposta un alert di prezzo per QUALSIASI
                                 coin quotata su Hyperliquid, sia PERPS che
@@ -352,6 +357,15 @@ EMA_CROSS_TREND_LOOKBACK_POINTS = 5
 # non etichettare come tale il solo rumore in virgola mobile -- stessa
 # tolleranza (0.1%) gia' usata in precedenza per il confronto a due punti.
 EMA_CROSS_TREND_SLOPE_EPSILON = 0.001
+# Tetto (in numero di candele) oltre il quale una stima di "tra quante
+# candele avviene l'incrocio" (vedi estimate_cross_periods) viene scartata
+# invece che mostrata: con una pendenza quasi piatta l'estrapolazione
+# lineare diventa enorme e/o instabile (un pendio minimo puo' far
+# "prevedere" un incrocio tra mesi, dato inutile e fuorviante) -- oltre
+# questa soglia si preferisce non dare alcun numero piuttosto che darne
+# uno inaffidabile. Coincide con EMA_CROSS_LONG_PERIOD (un mese di
+# candele giornaliere) come ordine di grandezza ragionevole.
+EMA_CROSS_ESTIMATE_MAX_PERIODS = EMA_CROSS_LONG_PERIOD
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento e in cui e'
 # calcolata la fascia notturna qui sotto. Se il database IANA non e'
@@ -937,6 +951,67 @@ def linreg_trend(values: list, epsilon: float = EMA_CROSS_TREND_SLOPE_EPSILON) -
     return "flat"
 
 
+def estimate_cross_periods(
+    signed_gap_window: list, max_periods: float = EMA_CROSS_ESTIMATE_MAX_PERIODS
+) -> dict:
+    """Estrapola (linearmente, su richiesta esplicita dell'utente) tra
+    quante candele il gap SEGNATO (EMA_corta - EMA_lunga, NON il valore
+    assoluto -- il segno serve a sapere se si sta avvicinando davvero allo
+    zero) potrebbe azzerarsi, cioe' le due EMA incrociarsi -- SOLO se il
+    gap si sta muovendo verso lo zero con quella pendenza (altrimenti la
+    proiezione punterebbe a un incrocio "nel passato", non ha senso e si
+    ritorna None per quella stima). `signed_gap_window` e' in ordine
+    cronologico (piu' vecchio prima), stessa finestra usata per il trend
+    ma SENZA abs().
+
+    Ritorna un dict con due stime indipendenti, entrambe in "numero di
+    candele da adesso" (float, None se non calcolabile o non
+    significativa):
+    - "linear": usa la pendenza media sull'intera finestra (stessa
+      pendenza usata per classificare il trend) -- risposta piu'
+      prudente/stabile, rispecchia il ritmo medio recente.
+    - "recent": usa solo l'ULTIMO passo (ultima candela vs la precedente)
+      -- piu' reattiva, riflette un'eventuale accelerazione/decelerazione
+      recente ("andamento piu' deciso"), ma anche piu' sensibile al
+      rumore di un singolo giorno.
+
+    In entrambi i casi una stima e' scartata (None) se il gap non si sta
+    avvicinando allo zero con quella pendenza, se e' gia' sostanzialmente
+    a zero (incrocio pressoche' in corso -> nessuna stima utile da dare),
+    o se supererebbe `max_periods` (estrapolazione troppo incerta per
+    essere utile, vedi EMA_CROSS_ESTIMATE_MAX_PERIODS). QUESTA E' UNA
+    SEMPLICE ESTRAPOLAZIONE LINEARE DEL RITMO RECENTE, NON UNA PREVISIONE:
+    il prezzo (e quindi le EMA, che lo seguono) puo' cambiare ritmo o
+    invertirsi in qualunque momento -- va presentata all'utente come
+    stima indicativa, non come certezza."""
+    n = len(signed_gap_window)
+    if n < 2:
+        return {"linear": None, "recent": None}
+    gap_now = signed_gap_window[-1]
+
+    def periods_until_zero(slope: float):
+        if slope == 0:
+            return None
+        t = -gap_now / slope
+        if t <= 0 or t > max_periods:
+            return None
+        return t
+
+    xs = range(n)
+    x_mean = (n - 1) / 2
+    y_mean = sum(signed_gap_window) / n
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    slope_linear = (
+        sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, signed_gap_window)) / denom if denom else 0.0
+    )
+    slope_recent = signed_gap_window[-1] - signed_gap_window[-2]
+
+    return {
+        "linear": periods_until_zero(slope_linear),
+        "recent": periods_until_zero(slope_recent),
+    }
+
+
 def compute_ema_cross_status(
     coin: str,
     now_ms: int,
@@ -961,22 +1036,29 @@ def compute_ema_cross_status(
     Ritorna None se non ci sono ancora abbastanza candele (chiuse +
     quella odierna) per calcolare entrambe le EMA (es. token quotato da
     meno di long_period giorni, o rete/endpoint momentaneamente senza
-    dati), altrimenti (ema_corta, ema_lunga, corta_sopra_lunga,
-    candela_t_ms, candela_chiusa, trend): candela_t_ms e' l'istante di
-    APERTURA (fisso, a differenza del prezzo di chiusura ancora
-    provvisorio) della candela usata per l'ultimo punto, candela_chiusa
-    e' False se e' quella odierna ancora in corso (per distinguerlo nei
-    messaggi, vedi format_ema_cross_message). trend e' calcolato con la
-    pendenza (regressione lineare ai minimi quadrati, non un confronto a
-    due soli punti) della distanza |EMA_corta - EMA_lunga| sulle ultime
-    EMA_CROSS_TREND_LOOKBACK_POINTS candele valide (compresa quella
-    odierna): "converging" se la pendenza e' negativa oltre
-    EMA_CROSS_TREND_SLOPE_EPSILON (le due medie si stanno avvicinando in
-    modo consistente su piu' giorni, non solo rispetto a ieri -- un
-    incrocio potrebbe essere in arrivo), "diverging" se e' positiva oltre
-    la soglia, "flat" se sostanzialmente piatta, None se non ci sono
-    almeno 2 punti validi nella finestra con cui calcolarla (storico
-    appena sufficiente)."""
+    dati), altrimenti un dict con le chiavi:
+    - "short_val"/"long_val": valori EMA correnti.
+    - "short_above_long": bool, EMA corta sopra la lunga in questo momento.
+    - "candle_t_ms": istante di APERTURA (fisso, a differenza del prezzo
+      di chiusura ancora provvisorio) della candela usata per l'ultimo
+      punto.
+    - "candle_is_closed": False se e' quella odierna ancora in corso (per
+      distinguerlo nei messaggi, vedi format_ema_cross_message).
+    - "trend": calcolato con la pendenza (regressione lineare ai minimi
+      quadrati, non un confronto a due soli punti) della distanza
+      |EMA_corta - EMA_lunga| sulle ultime EMA_CROSS_TREND_LOOKBACK_POINTS
+      candele valide (compresa quella odierna): "converging" se la
+      pendenza e' negativa oltre EMA_CROSS_TREND_SLOPE_EPSILON (le due
+      medie si stanno avvicinando in modo consistente su piu' giorni, non
+      solo rispetto a ieri -- un incrocio potrebbe essere in arrivo),
+      "diverging" se e' positiva oltre la soglia, "flat" se
+      sostanzialmente piatta, None se non ci sono almeno 2 punti validi
+      nella finestra con cui calcolarla (storico appena sufficiente).
+    - "cross_estimate": dict {"linear", "recent"} con la stima (in numero
+      di candele da adesso, float o None) di quando le due EMA
+      potrebbero incrociarsi, per estrapolazione lineare del gap
+      SEGNATO -- vedi estimate_cross_periods per i dettagli e gli avvertimenti
+      (e' una stima indicativa, non una previsione)."""
     start_ms = now_ms - lookback_days * 24 * 60 * 60 * 1000
     candles = fetch_candles(coin, interval, start_ms, now_ms)
     valid = [c for c in candles if isinstance(c, dict) and isinstance(c.get("t"), (int, float))]
@@ -999,26 +1081,36 @@ def compute_ema_cross_status(
 
     # Finestra degli ultimi EMA_CROSS_TREND_LOOKBACK_POINTS punti VALIDI
     # (entrambe le EMA calcolabili), a partire da quello corrente andando
-    # indietro, in ordine cronologico (piu' vecchio prima) -- usata per
-    # calcolare la pendenza della distanza tra le due EMA su piu' giorni
-    # invece che un confronto rumoroso a due soli punti.
-    gap_window = []
+    # indietro, in ordine cronologico (piu' vecchio prima) -- usata sia per
+    # il trend (sulla distanza assoluta) sia per la stima "tra quante
+    # candele" (sul gap SEGNATO, che serve conoscere per sapere verso
+    # quale zero si sta muovendo).
+    signed_gap_window = []
     i = idx
-    while i >= 0 and len(gap_window) < EMA_CROSS_TREND_LOOKBACK_POINTS:
+    while i >= 0 and len(signed_gap_window) < EMA_CROSS_TREND_LOOKBACK_POINTS:
         s = short_series[i]
         l = long_series[i]
         if s is None or l is None:
             break
-        gap_window.append(abs(s - l))
+        signed_gap_window.append(s - l)
         i -= 1
-    gap_window.reverse()
-    trend = linreg_trend(gap_window, epsilon=EMA_CROSS_TREND_SLOPE_EPSILON)
+    signed_gap_window.reverse()
+    trend = linreg_trend([abs(g) for g in signed_gap_window], epsilon=EMA_CROSS_TREND_SLOPE_EPSILON)
+    cross_estimate = estimate_cross_periods(signed_gap_window)
 
     last_candle = valid[idx]
     candle_t_ms = last_candle.get("t")
     candle_T_ms = last_candle.get("T")
     candle_is_closed = isinstance(candle_T_ms, (int, float)) and candle_T_ms < now_ms
-    return (short_val, long_val, short_val > long_val, candle_t_ms, candle_is_closed, trend)
+    return {
+        "short_val": short_val,
+        "long_val": long_val,
+        "short_above_long": short_val > long_val,
+        "candle_t_ms": candle_t_ms,
+        "candle_is_closed": candle_is_closed,
+        "trend": trend,
+        "cross_estimate": cross_estimate,
+    }
 
 
 def fetch_telegram_updates(bot_token: str, offset: int) -> list:
@@ -1575,6 +1667,41 @@ def ema_cross_trend_label(trend: str | None, short_above_long: bool | None) -> s
     return None
 
 
+def _format_cross_estimate_periods(periods: float) -> str:
+    if periods < 1:
+        return "meno di 1 candela"
+    n = round(periods)
+    if n < 1:
+        n = 1
+    return f"~{n} candela" if n == 1 else f"~{n} candele"
+
+
+def format_cross_estimate_line(cross_estimate: dict | None) -> str | None:
+    """Formatta il dict ritornato da estimate_cross_periods (chiavi
+    "linear"/"recent", ciascuna un numero di candele o None) in una riga
+    leggibile per il blocco EMA Cross, o None se nessuna delle due stime
+    e' disponibile/significativa per questo coin (vedi
+    estimate_cross_periods per quando succede: gap non convergente con
+    quella pendenza, o proiezione troppo lontana/incerta). Va mostrata
+    SOLO quando il trend e' "converging" (vedi il chiamante) -- con
+    "diverging"/"flat" non c'e' un incrocio verso cui estrapolare.
+    ATTENZIONE: e' un'estrapolazione LINEARE del ritmo recente, non una
+    previsione -- il testo lo ricorda esplicitamente per non dare un
+    falso senso di certezza."""
+    if not cross_estimate:
+        return None
+    linear = cross_estimate.get("linear")
+    recent = cross_estimate.get("recent")
+    if linear is None and recent is None:
+        return None
+    parts = []
+    if linear is not None:
+        parts.append(f"{_format_cross_estimate_periods(linear)} (ritmo medio)")
+    if recent is not None:
+        parts.append(f"{_format_cross_estimate_periods(recent)} (ritmo recente)")
+    return "⏳ possibile incrocio tra " + " / ".join(parts) + " se il ritmo continua (stima, non una previsione)"
+
+
 def format_ema_cross_summary_block(snapshots: list) -> str | None:
     """Blocco 'EMA Cross monitorati' incluso in /positions e nel riepilogo
     posizioni automatico (vedi format_positions_message, parametro
@@ -1588,17 +1715,22 @@ def format_ema_cross_summary_block(snapshots: list) -> str | None:
     vedi ema_cross_trend_label), allontanando ("diverging", il trend
     attuale si sta rafforzando) o sono stabili ("flat") rispetto al punto
     precedente della serie -- vedi compute_ema_cross_status, campo
-    "trend".
+    "trend". Quando il trend e' "converging" aggiunge anche una riga con
+    la stima (estrapolazione lineare, vedi estimate_cross_periods/
+    format_cross_estimate_line) di tra quante candele potrebbe avvenire
+    l'incrocio, con due varianti (ritmo medio sull'intera finestra e
+    ritmo dell'ultima candela, piu' reattivo) -- omessa se nessuna delle
+    due e' calcolabile o abbastanza vicina da essere utile.
 
     `snapshots` e' una lista di dict gia' calcolati dal chiamante (vedi
     get_ema_cross_snapshots() in main(): una chiamata di rete per coin
     monitorato, quindi fatta a monte, non qui) con chiavi
     "coin"/"coin_kind" sempre presenti, poi "short_val"/"long_val"/
-    "short_above_long"/"trend" in caso di successo oppure "error"
-    (stringa gia' pronta da mostrare) in caso di fallimento per quel
-    coin. Ritorna None se `snapshots` e' vuota (nessun coin monitorato),
-    cosi' il chiamante puo' omettere il blocco del tutto invece di
-    mostrarlo vuoto."""
+    "short_above_long"/"trend"/"cross_estimate" in caso di successo
+    oppure "error" (stringa gia' pronta da mostrare) in caso di
+    fallimento per quel coin. Ritorna None se `snapshots` e' vuota
+    (nessun coin monitorato), cosi' il chiamante puo' omettere il blocco
+    del tutto invece di mostrarlo vuoto."""
     if not snapshots:
         return None
     lines = [
@@ -1633,6 +1765,10 @@ def format_ema_cross_summary_block(snapshots: list) -> str | None:
         if trend_label:
             line += f" — {trend_label}"
         lines.append(line)
+        if snap.get("trend") == "converging":
+            estimate_line = format_cross_estimate_line(snap.get("cross_estimate"))
+            if estimate_line:
+                lines.append(f"   {estimate_line}")
     return "\n".join(lines)
 
 
@@ -2853,15 +2989,15 @@ def main() -> int:
                 if result is None:
                     snapshots.append({"coin": coin, "coin_kind": coin_kind, "error": "storico insufficiente"})
                     continue
-                short_val, long_val, short_above_long, _candle_t_ms, _candle_is_closed, trend = result
                 snapshots.append(
                     {
                         "coin": coin,
                         "coin_kind": coin_kind,
-                        "short_val": short_val,
-                        "long_val": long_val,
-                        "short_above_long": short_above_long,
-                        "trend": trend,
+                        "short_val": result["short_val"],
+                        "long_val": result["long_val"],
+                        "short_above_long": result["short_above_long"],
+                        "trend": result["trend"],
+                        "cross_estimate": result["cross_estimate"],
                     }
                 )
             ema_cross_snapshots_cache = snapshots
@@ -3453,7 +3589,11 @@ def main() -> int:
             continue
         if result is None:
             continue  # candele ancora insufficienti (o rete/endpoint momentaneamente senza dati)
-        short_val, long_val, short_above_long, candle_t_ms, candle_is_closed, _trend = result
+        short_val = result["short_val"]
+        long_val = result["long_val"]
+        short_above_long = result["short_above_long"]
+        candle_t_ms = result["candle_t_ms"]
+        candle_is_closed = result["candle_is_closed"]
 
         if "short_above_long" not in prev:
             # Primo controllo per questo coin: nessun invio Telegram,
