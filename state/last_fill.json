@@ -1,7 +1,15 @@
 {
   "ema_cross_state": {
+    "CASHCAT": {
+      "last_checked_ms": 1788351197812,
+      "short_above_long": true
+    },
     "HYPE": {
       "last_checked_ms": 1788348741782,
+      "short_above_long": true
+    },
+    "PUMP": {
+      "last_checked_ms": 1788351197812,
       "short_above_long": true
     }
   },
@@ -383,7 +391,7 @@
   ],
   "last_positions_recap_ms": 1788350601650,
   "last_time_ms": 1788350965011,
-  "last_update_id": 603631225,
+  "last_update_id": 603631226,
   "next_alert_id": 32,
   "notified_closed_twap_ids": [
     "1258197",
@@ -744,7 +752,7 @@
       "id": 9,
       "mids_key": "BTC",
       "price": 77000.0,
-      "runs_since_notify": 2,
+      "runs_since_notify": 3,
       "triggered": true
     },
     {
@@ -807,10 +815,10 @@
     446457907676691,
     579834600367635,
     566268496729621,
-    336504840955417,
     572151114130969,
-    1018948185697819,
+    336504840955417,
     907711106012698,
+    1018948185697819,
     43560395927067,
     404421517542941,
     1006620175857181,
