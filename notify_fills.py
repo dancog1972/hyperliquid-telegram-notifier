@@ -92,9 +92,12 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 blocco "EMA Cross monitorati" coi valori
                                 CORRENTI di EMA corta/lunga, la distanza
                                 tra le due e se si stanno avvicinando
-                                (possibile incrocio in arrivo) o
-                                allontanando (vedi
-                                format_ema_cross_summary_block).
+                                (specificando verso quale incrocio,
+                                ribassista o rialzista, sta andando il
+                                gap) o allontanando (il trend attuale si
+                                rafforza) -- vedi
+                                format_ema_cross_summary_block/
+                                ema_cross_trend_label.
   /alert <COIN> <sopra|sotto> <VALORE|VALORE%>
                                 Imposta un alert di prezzo per QUALSIASI
                                 coin quotata su Hyperliquid, sia PERPS che
@@ -334,6 +337,21 @@ EMA_CROSS_LOOKBACK_DAYS = EMA_CROSS_LONG_PERIOD * 5
 # fallito (rete/endpoint) NON fa avanzare il throttle, quindi viene
 # ritentato al giro successivo, non dopo altre 8 ore intere.
 DEFAULT_EMA_CROSS_CHECK_INTERVAL_HOURS = 8.0
+
+# Il campo "trend" (converging/diverging/flat, vedi compute_ema_cross_status)
+# viene calcolato con una regressione lineare (pendenza ai minimi quadrati)
+# della distanza |EMA_corta - EMA_lunga| sulle ultime
+# EMA_CROSS_TREND_LOOKBACK_POINTS candele (inclusa quella odierna ancora in
+# corso), non piu' con un confronto a due soli punti (oggi vs ieri): un
+# singolo giorno anomalo non basta piu' da solo a far scattare o sparire
+# l'etichetta di convergenza. 5 candele = circa una settimana, scelto come
+# compromesso tra reattivita' e affidabilita' del segnale.
+EMA_CROSS_TREND_LOOKBACK_POINTS = 5
+# Soglia (in frazione della distanza media nella finestra) sotto la quale
+# la pendenza viene considerata "flat" invece che converging/diverging, per
+# non etichettare come tale il solo rumore in virgola mobile -- stessa
+# tolleranza (0.1%) gia' usata in precedenza per il confronto a due punti.
+EMA_CROSS_TREND_SLOPE_EPSILON = 0.001
 
 # Fuso orario in cui mostrare l'intestazione di aggiornamento e in cui e'
 # calcolata la fascia notturna qui sotto. Se il database IANA non e'
@@ -890,6 +908,35 @@ def compute_ema_series(values: list, period: int) -> list:
     return result
 
 
+def linreg_trend(values: list, epsilon: float = EMA_CROSS_TREND_SLOPE_EPSILON) -> str | None:
+    """Classifica l'andamento di `values` (in ordine cronologico, piu'
+    vecchio prima) calcolandone la pendenza per regressione lineare ai
+    minimi quadrati (non un confronto tra soli primo e ultimo punto):
+    "converging" se la pendenza e' negativa oltre `epsilon` (in frazione
+    della media dei valori nella finestra), "diverging" se positiva oltre
+    la soglia, "flat" se sostanzialmente piatta. Ritorna None se ci sono
+    meno di 2 valori (pendenza non calcolabile) -- usata per il campo
+    "trend" di compute_ema_cross_status sulla distanza tra le due EMA."""
+    n = len(values)
+    if n < 2:
+        return None
+    xs = range(n)
+    x_mean = (n - 1) / 2
+    y_mean = sum(values) / n
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    if denom == 0:
+        return None
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values)) / denom
+    if y_mean == 0:
+        return "flat"
+    rel_slope = slope / y_mean
+    if rel_slope < -epsilon:
+        return "converging"
+    if rel_slope > epsilon:
+        return "diverging"
+    return "flat"
+
+
 def compute_ema_cross_status(
     coin: str,
     now_ms: int,
@@ -919,12 +966,17 @@ def compute_ema_cross_status(
     APERTURA (fisso, a differenza del prezzo di chiusura ancora
     provvisorio) della candela usata per l'ultimo punto, candela_chiusa
     e' False se e' quella odierna ancora in corso (per distinguerlo nei
-    messaggi, vedi format_ema_cross_message). trend e' "converging" se la
-    distanza tra le due EMA si e' ridotta rispetto al punto precedente
-    della serie (le due medie si stanno avvicinando -- un incrocio
-    potrebbe essere in arrivo), "diverging" se si e' allargata, "flat" se
-    sostanzialmente invariata, None se non c'e' un punto precedente
-    valido con cui confrontare (storico appena sufficiente)."""
+    messaggi, vedi format_ema_cross_message). trend e' calcolato con la
+    pendenza (regressione lineare ai minimi quadrati, non un confronto a
+    due soli punti) della distanza |EMA_corta - EMA_lunga| sulle ultime
+    EMA_CROSS_TREND_LOOKBACK_POINTS candele valide (compresa quella
+    odierna): "converging" se la pendenza e' negativa oltre
+    EMA_CROSS_TREND_SLOPE_EPSILON (le due medie si stanno avvicinando in
+    modo consistente su piu' giorni, non solo rispetto a ieri -- un
+    incrocio potrebbe essere in arrivo), "diverging" se e' positiva oltre
+    la soglia, "flat" se sostanzialmente piatta, None se non ci sono
+    almeno 2 punti validi nella finestra con cui calcolarla (storico
+    appena sufficiente)."""
     start_ms = now_ms - lookback_days * 24 * 60 * 60 * 1000
     candles = fetch_candles(coin, interval, start_ms, now_ms)
     valid = [c for c in candles if isinstance(c, dict) and isinstance(c.get("t"), (int, float))]
@@ -945,22 +997,22 @@ def compute_ema_cross_status(
     if short_val is None or long_val is None:
         return None
 
-    trend = None
-    if idx - 1 >= long_period - 1:
-        prev_short = short_series[idx - 1]
-        prev_long = long_series[idx - 1]
-        if prev_short is not None and prev_long is not None:
-            prev_gap = abs(prev_short - prev_long)
-            curr_gap = abs(short_val - long_val)
-            # Piccola tolleranza (0.1%) per non etichettare come
-            # "convergenza"/"divergenza" un cambiamento di distanza dovuto
-            # solo al rumore in virgola mobile.
-            if curr_gap < prev_gap * 0.999:
-                trend = "converging"
-            elif curr_gap > prev_gap * 1.001:
-                trend = "diverging"
-            else:
-                trend = "flat"
+    # Finestra degli ultimi EMA_CROSS_TREND_LOOKBACK_POINTS punti VALIDI
+    # (entrambe le EMA calcolabili), a partire da quello corrente andando
+    # indietro, in ordine cronologico (piu' vecchio prima) -- usata per
+    # calcolare la pendenza della distanza tra le due EMA su piu' giorni
+    # invece che un confronto rumoroso a due soli punti.
+    gap_window = []
+    i = idx
+    while i >= 0 and len(gap_window) < EMA_CROSS_TREND_LOOKBACK_POINTS:
+        s = short_series[i]
+        l = long_series[i]
+        if s is None or l is None:
+            break
+        gap_window.append(abs(s - l))
+        i -= 1
+    gap_window.reverse()
+    trend = linreg_trend(gap_window, epsilon=EMA_CROSS_TREND_SLOPE_EPSILON)
 
     last_candle = valid[idx]
     candle_t_ms = last_candle.get("t")
@@ -1498,11 +1550,29 @@ def format_ema_cross_message(
     return "\n".join(lines)
 
 
-EMA_CROSS_TREND_LABELS = {
-    "converging": "🔻 convergono (si stanno avvicinando)",
-    "diverging": "🔺 divergono (si stanno allontanando)",
-    "flat": "➡️ stabili",
-}
+def ema_cross_trend_label(trend: str | None, short_above_long: bool | None) -> str | None:
+    """Etichetta testuale per il campo "trend" di compute_ema_cross_status,
+    usata in format_ema_cross_summary_block. A differenza di una semplice
+    "converging"/"diverging" fissa, indica anche VERSO QUALE incrocio si
+    sta muovendo il gap: se le due EMA convergono (si avvicinano), quello
+    che si avvicina e' l'incrocio OPPOSTO alla posizione attuale --
+    EMA corta gia' sopra la lunga (short_above_long=True, regime
+    rialzista) che converge sta andando verso un incrocio RIBASSISTA
+    (short che scende sotto long, come in format_ema_cross_message
+    direction="down"); il contrario se short_above_long=False. Se invece
+    divergono, il trend attuale (rialzista/ribassista) si sta rafforzando
+    -- ci si allontana dal prossimo incrocio, non ci si avvicina."""
+    if short_above_long is None:
+        short_above_long = True  # fallback prudente, non dovrebbe capitare
+    if trend == "converging":
+        target = "ribassista (short)" if short_above_long else "rialzista (long)"
+        return f"🔻 convergono — verso un possibile incrocio {target}"
+    if trend == "diverging":
+        corrente = "rialzista" if short_above_long else "ribassista"
+        return f"🔺 divergono — trend {corrente} si rafforza"
+    if trend == "flat":
+        return "➡️ stabili"
+    return None
 
 
 def format_ema_cross_summary_block(snapshots: list) -> str | None:
@@ -1514,9 +1584,11 @@ def format_ema_cross_summary_block(snapshots: list) -> str | None:
     aggiornato al momento della richiesta) di EMA corta/lunga, la
     distanza tra le due (assoluta e in percentuale della EMA lunga) e se
     si stanno avvicinando ("converging", un incrocio potrebbe essere in
-    arrivo), allontanando ("diverging") o sono stabili ("flat") rispetto
-    al punto precedente della serie -- vedi compute_ema_cross_status,
-    campo "trend".
+    arrivo -- specificando VERSO QUALE incrocio, ribassista o rialzista,
+    vedi ema_cross_trend_label), allontanando ("diverging", il trend
+    attuale si sta rafforzando) o sono stabili ("flat") rispetto al punto
+    precedente della serie -- vedi compute_ema_cross_status, campo
+    "trend".
 
     `snapshots` e' una lista di dict gia' calcolati dal chiamante (vedi
     get_ema_cross_snapshots() in main(): una chiamata di rete per coin
@@ -1557,7 +1629,7 @@ def format_ema_cross_summary_block(snapshots: list) -> str | None:
             line += f" (distanza: {abs(gap):g}, {pct:.2f}%)"
         else:
             line += f" (distanza: {abs(gap):g})"
-        trend_label = EMA_CROSS_TREND_LABELS.get(snap.get("trend"))
+        trend_label = ema_cross_trend_label(snap.get("trend"), snap.get("short_above_long"))
         if trend_label:
             line += f" — {trend_label}"
         lines.append(line)
