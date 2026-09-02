@@ -141,14 +141,20 @@ Comandi Telegram (a richiesta, nessun invio automatico):
                                 momento dell'aggiunta, anche se le due EMA
                                 sono gia' incrociate in quel momento: si
                                 notifica solo il PROSSIMO vero incrocio.
+                                Chiamato SENZA argomento (es. dal pulsante
+                                sulla tastiera) funziona in modo guidato
+                                come /newalert: il bot manda un
+                                messaggio-prompt e basta rispondere con
+                                <COIN>.
   /emacrosses                   Elenca i coin monitorati per l'EMA Cross.
   /delemacross <COIN>           Rimuove un coin dal monitoraggio EMA Cross.
 I comandi vengono letti tramite polling (Telegram getUpdates) alla stessa
 frequenza con cui gira lo script: la risposta arriva quindi al PROSSIMO
 controllo programmato, non istantaneamente (fino a qualche minuto di
 attesa, a seconda di quanto spesso e' schedulato il workflow) -- con
-/newalert questo vale per OGNI passaggio (prompt e poi risposta), quindi
-con un intervallo lungo puo' richiedere un paio di giri. Per sicurezza
+/newalert e con /emacross usato senza argomento questo vale per OGNI
+passaggio (prompt e poi risposta), quindi con un intervallo lungo puo'
+richiedere un paio di giri. Per sicurezza
 vengono processati solo i messaggi che arrivano dalla chat configurata in
 TELEGRAM_CHAT_ID: comandi da altre chat vengono ignorati.
 
@@ -183,10 +189,10 @@ mostrata quella nel riepilogo, piu' ricca di dettagli, ma l'alert resta
   proteggere.
 
 Ogni messaggio del bot porta anche una tastiera Telegram persistente
-("/twap", "/positions", "/alerts", "/newalert") cosi' i comandi piu'
-comuni si possono richiamare con un tocco invece di scriverli a mano;
-scrivere "/start" al bot manda un messaggio di benvenuto che la mostra
-anche a chat vuota.
+("/twap", "/positions", "/alerts", "/newalert", "/emacrosses",
+"/emacross") cosi' i comandi piu' comuni si possono richiamare con un
+tocco invece di scriverli a mano; scrivere "/start" al bot manda un
+messaggio di benvenuto che la mostra anche a chat vuota.
 
 Ogni notifica AUTOMATICA (fill/nuovi TWAP, alert di prezzo, riepilogo
 posizioni) e' preceduta dalla propria intestazione, con titolo E colore
@@ -361,12 +367,18 @@ TWAP_STATE_TYPE_CANDIDATES = ["userTwapHistory", "twapHistory"]
 # ravvicinate restano visivamente distinte invece di confondersi.
 MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖"
 
-# Tastiera persistente con i due comandi, allegata di default ad ogni
+# Tastiera persistente coi comandi piu' comuni, allegata di default ad ogni
 # messaggio mandato dal bot: al tocco Telegram invia il testo del pulsante
 # come un normale messaggio, che viene interpretato allo stesso modo di un
 # comando digitato a mano (nessuna logica separata da gestire).
+# "/emacrosses" elenca i coin monitorati per l'EMA Cross -- stessa logica
+# di "/alerts" per i price alert: un comando "elenca/stato" senza
+# argomenti, zero-tap. "/emacross" (senza argomento, dal pulsante) invece
+# avvia il flusso guidato -- stessa logica di "/newalert": manda un
+# messaggio-prompt e aspetta la risposta con <COIN> (vedi
+# EMACROSS_PROMPT_MARKER/EMACROSS_PROMPT_REPLY_MARKUP).
 COMMAND_KEYBOARD = {
-    "keyboard": [["/twap", "/positions"], ["/alerts", "/newalert"]],
+    "keyboard": [["/twap", "/positions"], ["/alerts", "/newalert"], ["/emacrosses", "/emacross"]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -389,6 +401,18 @@ ALERT_PROMPT_MARKER = "✏️ Nuovo alert"
 ALERT_PROMPT_REPLY_MARKUP = {
     "force_reply": True,
     "input_field_placeholder": "es. BTC sotto 65000",
+    "selective": True,
+}
+
+# Stessa logica di ALERT_PROMPT_MARKER/ALERT_PROMPT_REPLY_MARKUP, ma per il
+# flusso guidato di "/emacross" chiamato SENZA argomento (es. dal pulsante
+# sulla tastiera): la risposta e' interpretata come "<COIN>" direttamente
+# (vedi try_add_ema_cross_watch), senza dover scrivere "/emacross BTC".
+EMACROSS_PROMPT_MARKER = "📊 Nuovo EMA Cross"
+
+EMACROSS_PROMPT_REPLY_MARKUP = {
+    "force_reply": True,
+    "input_field_placeholder": "es. BTC",
     "selective": True,
 }
 
@@ -3493,6 +3517,12 @@ def main() -> int:
                     # "<coin> <direzione> <valore>", senza comando iniziale.
                     print(f"  update {update_id}: risposta al prompt /newalert -> '{text}'")
                     reply_text = try_create_alert((text or "").strip())
+                elif isinstance(reply_to, dict) and EMACROSS_PROMPT_MARKER in (reply_to.get("text") or ""):
+                    # Stessa cosa ma per il flusso guidato di /emacross
+                    # (chiamato senza argomento): il testo della risposta e'
+                    # direttamente "<coin>".
+                    print(f"  update {update_id}: risposta al prompt /emacross -> '{text}'")
+                    reply_text = try_add_ema_cross_watch((text or "").strip())
                 else:
                     command = normalize_command(text)
                     print(f"  update {update_id}: testo='{text}' comando riconosciuto='{command or '(nessuno)'}'")
@@ -3537,7 +3567,19 @@ def main() -> int:
                             else:
                                 reply_text = f"⚠️ Nessun alert trovato con id {alert_id}."
                     elif command == "emacross":
-                        reply_text = try_add_ema_cross_watch(command_args(text))
+                        emacross_args = command_args(text)
+                        if not emacross_args.strip():
+                            # Nessun argomento (es. tocco diretto del
+                            # pulsante): flusso guidato, stessa logica di
+                            # /newalert -- manda un prompt e aspetta la
+                            # risposta invece del messaggio d'errore d'uso.
+                            reply_text = (
+                                f"{EMACROSS_PROMPT_MARKER}: rispondi a questo messaggio (usa 'Rispondi'/'Reply' "
+                                f"su Telegram) con <COIN>\nEsempio: BTC"
+                            )
+                            reply_markup_override = EMACROSS_PROMPT_REPLY_MARKUP
+                        else:
+                            reply_text = try_add_ema_cross_watch(emacross_args)
                     elif command == "emacrosses":
                         reply_text = format_ema_cross_watch_list_message(ema_cross_watch)
                     elif command in ("delemacross", "rmemacross"):
