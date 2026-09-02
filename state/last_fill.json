@@ -10,6 +10,16 @@
       "candle_coin": "HYPE",
       "coin": "HYPE",
       "coin_kind": "perp"
+    },
+    {
+      "candle_coin": "CASHCAT",
+      "coin": "CASHCAT",
+      "coin_kind": "perp"
+    },
+    {
+      "candle_coin": "PUMP",
+      "coin": "PUMP",
+      "coin_kind": "perp"
     }
   ],
   "known_twap_ids": [
@@ -373,7 +383,7 @@
   ],
   "last_positions_recap_ms": 1788350601650,
   "last_time_ms": 1788350965011,
-  "last_update_id": 603631223,
+  "last_update_id": 603631225,
   "next_alert_id": 32,
   "notified_closed_twap_ids": [
     "1258197",
@@ -734,7 +744,7 @@
       "id": 9,
       "mids_key": "BTC",
       "price": 77000.0,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -797,12 +807,12 @@
     446457907676691,
     579834600367635,
     566268496729621,
-    572151114130969,
     336504840955417,
-    43560395927067,
-    907711106012698,
-    404421517542941,
+    572151114130969,
     1018948185697819,
+    907711106012698,
+    43560395927067,
+    404421517542941,
     1006620175857181,
     723552266454560,
     385584702631457,
