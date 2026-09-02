@@ -1420,15 +1420,15 @@ def format_position_summary(pos: dict, current_price) -> str:
     direzione, size, entry vs prezzo attuale, PnL, prezzo di liquidazione.
     Parsing difensivo come nel resto del modulo -- righe omesse quando il
     dato non e' interpretabile con sicurezza. Icone per leggibilita' a
-    colpo d'occhio (🟢/🔴 in base al segno per vs-entry e PnL, 🎯 per
-    l'entry, ⚠️ per la liquidazione -- stessa convenzione di
-    format_positions_message)."""
+    colpo d'occhio (📈/📉 per la direzione long/short, 🟢/🔴 in base al
+    segno per vs-entry e PnL, 🎯 per l'entry, ⚠️ per la liquidazione --
+    stessa convenzione di format_positions_message)."""
     try:
         szi = float(pos.get("szi", 0))
     except (TypeError, ValueError):
         szi = 0.0
     direction = "LONG" if szi > 0 else "SHORT"
-    dir_icon = "🟢" if szi > 0 else "🔴"
+    dir_icon = "📈" if szi > 0 else "📉"
     header = f"📌 Posizione: {dir_icon} {direction} {abs(szi):g}"
 
     try:
@@ -2619,7 +2619,7 @@ def format_positions_message(
         except (TypeError, ValueError):
             szi = 0.0
         direction = "LONG" if szi > 0 else "SHORT"
-        dir_icon = "🟢" if szi > 0 else "🔴"
+        dir_icon = "📈" if szi > 0 else "📉"
         abs_sz = abs(szi)
 
         leverage = pos.get("leverage")
