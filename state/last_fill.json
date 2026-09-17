@@ -441,7 +441,7 @@
     "2222254"
   ],
   "last_positions_recap_ms": 1789639339567,
-  "last_time_ms": 1789642393050,
+  "last_time_ms": 1789642439007,
   "last_update_id": 603631305,
   "next_alert_id": 37,
   "notified_closed_twap_ids": [
@@ -876,7 +876,7 @@
       "id": 35,
       "mids_key": "CASHCAT",
       "price": 0.19,
-      "runs_since_notify": 1,
+      "runs_since_notify": 2,
       "triggered": true
     },
     {
@@ -1389,7 +1389,7 @@
     897018632663028,
     824288880015350,
     483348561960950,
-    349290962323305
+    312166196609711
   ],
   "twap_progress": {
     "2115076": {
@@ -1979,9 +1979,9 @@
     },
     "2218788": {
       "coin": "USELESS",
-      "executed_sz": 3094.0,
-      "last_ms": 1789641089033,
-      "notional": 752.8619699999998,
+      "executed_sz": 3137.0,
+      "last_ms": 1789642439007,
+      "notional": 764.6224699999998,
       "side": "B"
     },
     "2220930": {
