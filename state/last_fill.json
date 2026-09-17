@@ -874,7 +874,7 @@
       "mids_key": "CASHCAT",
       "price": 0.19,
       "runs_since_notify": 0,
-      "triggered": false
+      "triggered": true
     },
     {
       "coin": "USELESS",
