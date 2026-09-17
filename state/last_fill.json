@@ -873,7 +873,7 @@
       "id": 35,
       "mids_key": "CASHCAT",
       "price": 0.19,
-      "runs_since_notify": 4,
+      "runs_since_notify": 0,
       "triggered": true
     },
     {
