@@ -443,7 +443,7 @@
     "2223486"
   ],
   "last_positions_recap_ms": 1789653797878,
-  "last_time_ms": 1789660881074,
+  "last_time_ms": 1789660961005,
   "last_update_id": 603631308,
   "next_alert_id": 38,
   "notified_closed_twap_ids": [
@@ -1390,7 +1390,7 @@
     949765170782197,
     824288880015350,
     483348561960950,
-    924250458490871
+    608331472858896
   ],
   "twap_progress": {
     "2115076": {
@@ -2008,9 +2008,9 @@
     },
     "2223486": {
       "coin": "PONS",
-      "executed_sz": 36.0,
-      "last_ms": 1789660751054,
-      "notional": 23.94378,
+      "executed_sz": 54.0,
+      "last_ms": 1789660961005,
+      "notional": 36.00702,
       "side": "B"
     }
   }
