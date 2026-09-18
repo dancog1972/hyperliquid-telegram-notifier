@@ -445,8 +445,8 @@
     "2224176",
     "2226287"
   ],
-  "last_positions_recap_ms": 1789732938306,
-  "last_time_ms": 1789740008017,
+  "last_positions_recap_ms": 1789740140348,
+  "last_time_ms": 1789740104087,
   "last_update_id": 603631309,
   "next_alert_id": 38,
   "notified_closed_twap_ids": [
@@ -857,7 +857,7 @@
       "id": 26,
       "mids_key": "HYPE",
       "price": 90.0,
-      "runs_since_notify": 3,
+      "runs_since_notify": 4,
       "triggered": true
     },
     {
@@ -899,7 +899,6 @@
     }
   ],
   "seen_tids": [
-    998176568166686,
     859370879602059,
     1004369086244240,
     801655358352813,
@@ -1398,7 +1397,8 @@
     350673535289331,
     897018632663028,
     860845957848628,
-    824288880015350
+    824288880015350,
+    374179965234865
   ],
   "twap_progress": {
     "2115076": {
@@ -2037,9 +2037,9 @@
     },
     "2226287": {
       "coin": "PONS",
-      "executed_sz": 423.0,
-      "last_ms": 1789739264010,
-      "notional": 301.33878,
+      "executed_sz": 440.0,
+      "last_ms": 1789740104087,
+      "notional": 313.39824,
       "side": "B"
     }
   }
