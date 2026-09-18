@@ -447,7 +447,7 @@
     "2228093"
   ],
   "last_positions_recap_ms": 1789747397126,
-  "last_time_ms": 1789752437026,
+  "last_time_ms": 1789752488002,
   "last_update_id": 603631309,
   "next_alert_id": 38,
   "notified_closed_twap_ids": [
@@ -858,7 +858,7 @@
       "id": 26,
       "mids_key": "HYPE",
       "price": 90.0,
-      "runs_since_notify": 0,
+      "runs_since_notify": 1,
       "triggered": true
     },
     {
@@ -1399,7 +1399,7 @@
     897018632663028,
     860845957848628,
     824288880015350,
-    970029654139367
+    335275140491323
   ],
   "twap_progress": {
     "2115076": {
@@ -1968,9 +1968,9 @@
     },
     "2217846": {
       "coin": "HYPE",
-      "executed_sz": 60.46999999999995,
-      "last_ms": 1789751948012,
-      "notional": 4948.34381,
+      "executed_sz": 60.59999999999995,
+      "last_ms": 1789752488002,
+      "notional": 4960.18941,
       "side": "B"
     },
     "2217851": {
