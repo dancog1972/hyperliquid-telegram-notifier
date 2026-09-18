@@ -447,7 +447,7 @@
     "2228093"
   ],
   "last_positions_recap_ms": 1789754597391,
-  "last_time_ms": 1789769249065,
+  "last_time_ms": 1789769417023,
   "last_update_id": 603631310,
   "next_alert_id": 38,
   "notified_closed_twap_ids": [
@@ -858,7 +858,7 @@
       "id": 26,
       "mids_key": "HYPE",
       "price": 90.0,
-      "runs_since_notify": 3,
+      "runs_since_notify": 4,
       "triggered": true
     },
     {
@@ -887,7 +887,7 @@
       "id": 36,
       "mids_key": "USELESS",
       "price": 0.3,
-      "runs_since_notify": 4,
+      "runs_since_notify": 0,
       "triggered": true
     },
     {
@@ -901,8 +901,6 @@
     }
   ],
   "seen_tids": [
-    64080289280359,
-    889205302139945,
     380871050454180,
     916502120052184,
     675662474436073,
@@ -1400,7 +1398,9 @@
     824288880015350,
     1072452415440883,
     660290472843252,
-    860845957848628
+    860845957848628,
+    11078552906360,
+    416507164052742
   ],
   "twap_progress": {
     "2115076": {
@@ -2046,16 +2046,16 @@
     },
     "2228093": {
       "coin": "USELESS",
-      "executed_sz": 4205.0,
-      "last_ms": 1789769177014,
-      "notional": 1177.2931099999996,
+      "executed_sz": 4244.0,
+      "last_ms": 1789769417023,
+      "notional": 1189.1202499999997,
       "side": "B"
     },
     "2229535": {
       "coin": "PONS",
-      "executed_sz": 18.0,
-      "last_ms": 1789768721002,
-      "notional": 12.07944,
+      "executed_sz": 36.0,
+      "last_ms": 1789769411046,
+      "notional": 24.14898,
       "side": "B"
     }
   }
