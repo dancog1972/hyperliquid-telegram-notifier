@@ -1,19 +1,19 @@
 {
   "ema_cross_state": {
     "BTC": {
-      "last_checked_ms": 1790070501512,
+      "last_checked_ms": 1790099355858,
       "short_above_long": true
     },
     "CASHCAT": {
-      "last_checked_ms": 1790070501512,
+      "last_checked_ms": 1790099355858,
       "short_above_long": false
     },
     "HYPE": {
-      "last_checked_ms": 1790070501512,
+      "last_checked_ms": 1790099355858,
       "short_above_long": true
     },
     "PUMP": {
-      "last_checked_ms": 1790070501512,
+      "last_checked_ms": 1790099355858,
       "short_above_long": true
     }
   },
