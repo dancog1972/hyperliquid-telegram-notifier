@@ -1,19 +1,19 @@
 {
   "ema_cross_state": {
     "BTC": {
-      "last_checked_ms": 1790128157525,
+      "last_checked_ms": 1790157032726,
       "short_above_long": true
     },
     "CASHCAT": {
-      "last_checked_ms": 1790128157525,
+      "last_checked_ms": 1790157032726,
       "short_above_long": false
     },
     "HYPE": {
-      "last_checked_ms": 1790128157525,
+      "last_checked_ms": 1790157032726,
       "short_above_long": true
     },
     "PUMP": {
-      "last_checked_ms": 1790128157525,
+      "last_checked_ms": 1790157032726,
       "short_above_long": true
     }
   },
@@ -475,7 +475,7 @@
     "2244202"
   ],
   "last_positions_recap_ms": 1790150455130,
-  "last_time_ms": 1790156511080,
+  "last_time_ms": 1790157021033,
   "last_update_id": 603631324,
   "next_alert_id": 43,
   "notified_closed_twap_ids": [
@@ -896,6 +896,7 @@
     "2244266",
     "2244272",
     "2244332",
+    "2244392",
     "2244849"
   ],
   "pending_twap_ids": [
@@ -950,7 +951,6 @@
     }
   ],
   "seen_tids": [
-    461496308522393,
     540314476365269,
     795639862126055,
     58284718452207,
@@ -1449,7 +1449,8 @@
     1072452415440883,
     600358775998453,
     1020251762859979,
-    969487506659327
+    969487506659327,
+    1088430996662312
   ],
   "twap_progress": {
     "2115076": {
@@ -2263,9 +2264,9 @@
     },
     "2244392": {
       "coin": "CASHCAT",
-      "executed_sz": 5909.0,
-      "last_ms": 1790156511080,
-      "notional": 1032.3274,
+      "executed_sz": 6065.0,
+      "last_ms": 1790157021033,
+      "notional": 1058.9737599999999,
       "side": "B"
     },
     "2244849": {
