@@ -498,7 +498,7 @@
   ],
   "last_positions_recap_ms": 1790532259714,
   "last_time_ms": 1790550892054,
-  "last_update_id": 603631328,
+  "last_update_id": 603631329,
   "next_alert_id": 43,
   "notified_closed_twap_ids": [
     "1258197",
@@ -943,16 +943,6 @@
   ],
   "price_alerts": [
     {
-      "coin": "PUMP",
-      "created_ms": 1787554635493,
-      "direction": "above",
-      "id": 19,
-      "mids_key": "PUMP",
-      "price": 0.00515,
-      "runs_since_notify": 1,
-      "triggered": true
-    },
-    {
       "coin": "BTC",
       "created_ms": 1788390439632,
       "direction": "below",
@@ -1008,8 +998,8 @@
     12892614884881,
     301263650977298,
     932245181367829,
-    572415608323609,
     783978523698713,
+    572415608323609,
     939632052573723,
     320867842336284,
     210043962727965,
