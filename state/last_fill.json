@@ -1,15 +1,15 @@
 {
   "ema_cross_state": {
     "BTC": {
-      "last_checked_ms": 1790993355809,
+      "last_checked_ms": 1791022157465,
       "short_above_long": true
     },
     "CASHCAT": {
-      "last_checked_ms": 1790993355809,
+      "last_checked_ms": 1791022157465,
       "short_above_long": false
     },
     "HYPE": {
-      "last_checked_ms": 1790993355809,
+      "last_checked_ms": 1791022157465,
       "short_above_long": true
     },
     "PONS": {
@@ -17,7 +17,7 @@
       "short_above_long": false
     },
     "PUMP": {
-      "last_checked_ms": 1790993355809,
+      "last_checked_ms": 1791022157465,
       "short_above_long": true
     }
   },
@@ -1097,13 +1097,13 @@
     65423470216782,
     212615136988749,
     267188749180496,
+    264259138936401,
+    347700965357137,
+    53653641662035,
     1079371224239697,
     908669399580242,
     683426067893842,
-    264259138936401,
-    347700965357137,
     550884846061139,
-    53653641662035,
     270045584668241,
     995621942560344,
     92950550933081,
